@@ -172,6 +172,8 @@ function App() {
   const [moving, setMoving] = useState<Shortcut | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [navigationCollapsed, setNavigationCollapsed] = useState(false);
+  const [foldersCollapsed, setFoldersCollapsed] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(false);
@@ -383,17 +385,21 @@ function App() {
         {!sidebarCollapsed && (
           <>
             <div className="brand">Espanso Shortcut Manager</div>
-            <nav>
-              {nav.map((item) => (
-                <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
-                  {item.label}
-                </button>
-              ))}
-            </nav>
+            <SidebarSection title="Navigation" collapsed={navigationCollapsed} onToggle={() => setNavigationCollapsed((value) => !value)}>
+              <nav>
+                {nav.map((item) => (
+                  <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
+                    {item.label}
+                  </button>
+                ))}
+              </nav>
+            </SidebarSection>
             {view === "shortcuts" && (
               <FolderRail
                 folders={folders}
                 selectedFolder={selectedFolder}
+                collapsed={foldersCollapsed}
+                onToggle={() => setFoldersCollapsed((value) => !value)}
                 onSelect={setSelectedFolder}
                 onDropShortcut={dropShortcut}
               />
@@ -519,6 +525,8 @@ function ShortcutsView(props: {
 function FolderRail(props: {
   folders: FolderItem[];
   selectedFolder: string;
+  collapsed: boolean;
+  onToggle: () => void;
   onSelect: (folder: string) => void;
   onDropShortcut: (shortcutId: string, folder: string) => void;
 }) {
@@ -531,8 +539,7 @@ function FolderRail(props: {
   };
 
   return (
-    <div className="sidebarSection">
-      <div className="sidebarSectionTitle">Folders</div>
+    <SidebarSection title="Folders" collapsed={props.collapsed} onToggle={props.onToggle}>
       <div className="folderRail">
         <button className={props.selectedFolder === "All" ? "active" : ""} onClick={() => props.onSelect("All")}>
           <span>All</span>
@@ -551,6 +558,23 @@ function FolderRail(props: {
           </button>
         ))}
       </div>
+    </SidebarSection>
+  );
+}
+
+function SidebarSection(props: { title: string; collapsed: boolean; onToggle: () => void; children: React.ReactNode }) {
+  return (
+    <div className="sidebarSection">
+      <button
+        className="sidebarSectionHeader"
+        type="button"
+        aria-expanded={!props.collapsed}
+        onClick={props.onToggle}
+      >
+        <span>{props.title}</span>
+        <strong>{props.collapsed ? "+" : "-"}</strong>
+      </button>
+      {!props.collapsed && <div className="sidebarSectionBody">{props.children}</div>}
     </div>
   );
 }

@@ -87,7 +87,7 @@ button:disabled {
   padding-right: 38px;
   font-weight: 700;
   line-height: 1.25;
-  margin-bottom: 28px;
+  margin-bottom: 22px;
 }
 
 .sidebar nav {
@@ -96,18 +96,42 @@ button:disabled {
 }
 
 .sidebarSection {
-  margin-top: 28px;
+  margin-top: 22px;
   padding-top: 18px;
   border-top: 1px solid #334250;
 }
 
-.sidebarSectionTitle {
+.brand + .sidebarSection {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.sidebarSectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between !important;
+  gap: 10px;
+  min-height: 30px;
   margin-bottom: 10px;
+  padding: 0 !important;
+  border: 0 !important;
   color: #9fb0bf;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.sidebarSectionHeader strong {
+  color: #d8e1ea;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.sidebarSectionBody {
+  display: grid;
+  gap: 8px;
 }
 
 .sidebar button {
