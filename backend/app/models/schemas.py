@@ -40,6 +40,7 @@ class Shortcut(BaseModel):
     word: bool | None = None
     propagate_case: bool | None = None
     uppercase_style: str | None = None
+    force_mode: str | None = None
     folder: str
     file: str
     path: str
@@ -60,6 +61,7 @@ class ShortcutCreate(BaseModel):
     word: bool = False
     propagate_case: bool = False
     uppercase_style: str | None = None
+    force_mode: str | None = None
 
 
 class ShortcutUpdate(BaseModel):
@@ -71,6 +73,7 @@ class ShortcutUpdate(BaseModel):
     word: bool = False
     propagate_case: bool = False
     uppercase_style: str | None = None
+    force_mode: str | None = None
 
 
 class ShortcutRawUpdate(BaseModel):

@@ -48,13 +48,43 @@ button:disabled {
   min-height: 100vh;
 }
 
+.shell.sidebarCollapsed {
+  grid-template-columns: 52px minmax(0, 1fr);
+}
+
 .sidebar {
+  position: relative;
   background: #1f2933;
   color: #ffffff;
   padding: 24px 16px;
 }
 
+.sidebarCollapsed .sidebar {
+  padding: 16px 8px;
+}
+
+.sidebarToggle {
+  position: absolute;
+  top: 16px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px !important;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-color: #4b5d6d;
+  text-align: center !important;
+}
+
+.sidebarCollapsed .sidebarToggle {
+  position: static;
+}
+
 .brand {
+  padding-right: 38px;
   font-weight: 700;
   line-height: 1.25;
   margin-bottom: 28px;
@@ -63,6 +93,21 @@ button:disabled {
 .sidebar nav {
   display: grid;
   gap: 8px;
+}
+
+.sidebarSection {
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid #334250;
+}
+
+.sidebarSectionTitle {
+  margin-bottom: 10px;
+  color: #9fb0bf;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .sidebar button {
@@ -130,13 +175,6 @@ h2 {
   overflow: hidden;
 }
 
-.shortcutLayout {
-  display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
-  gap: 18px;
-  align-items: start;
-}
-
 .folderRail {
   display: grid;
   gap: 8px;
@@ -153,13 +191,13 @@ h2 {
 }
 
 .folderRail button.active {
-  background: #1f2933;
-  border-color: #1f2933;
+  background: #334250;
+  border-color: #4b5d6d;
   color: #ffffff;
 }
 
 .folderRail button:hover {
-  border-color: #1f2933;
+  border-color: #4b5d6d;
 }
 
 .folderRail span {
@@ -176,6 +214,10 @@ h2 {
   min-height: 54px;
   padding: 12px 16px;
   border-bottom: 1px solid #e7ecf1;
+}
+
+.row > * {
+  min-width: 0;
 }
 
 .backupRow {
@@ -203,6 +245,13 @@ h2 {
 }
 
 .preview {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.triggerText {
+  display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -302,10 +351,13 @@ h2 {
   display: grid;
   place-items: center;
   padding: 24px;
+  overflow: auto;
 }
 
 .modal {
   width: min(620px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
   background: #ffffff;
   border-radius: 8px;
   padding: 22px;
@@ -332,6 +384,69 @@ h2 {
   padding: 10px 12px;
   font-weight: 400;
   background: #ffffff;
+}
+
+.labelWithInfo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+}
+
+.folderInput {
+  display: grid;
+  gap: 8px;
+}
+
+.formBuilder {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  border: 1px solid #d7dee7;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.formBuilderHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 700;
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(180px, 220px) 90px;
+  gap: 8px;
+  align-items: start;
+}
+
+.fieldTypeControl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 8px;
+  align-items: center;
+}
+
+.fieldTypeControl .infoButton {
+  margin-left: 0;
+}
+
+.fieldValuesGroup {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+}
+
+.fieldValues {
+  min-height: 76px;
+  width: 100%;
+}
+
+.compactEmpty {
+  padding: 8px 0;
 }
 
 .optionGrid {
@@ -381,11 +496,9 @@ h2 {
 }
 
 .tooltip {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: 5;
-  width: min(280px, 72vw);
+  position: fixed;
+  z-index: 20;
+  width: min(320px, calc(100vw - 32px));
   padding: 10px 12px;
   border: 1px solid #c9d2dc;
   border-radius: 6px;
@@ -398,14 +511,12 @@ h2 {
   opacity: 0;
   pointer-events: none;
   text-align: left;
-  transform: translateY(4px);
-  transition: opacity 120ms ease, transform 120ms ease;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-.infoButton:hover .tooltip,
-.infoButton:focus-visible .tooltip {
+.visibleTooltip {
   opacity: 1;
-  transform: translateY(0);
 }
 
 .codeInput {
@@ -453,10 +564,6 @@ h2 {
     grid-template-columns: 1fr;
   }
 
-  .shortcutLayout {
-    grid-template-columns: 1fr;
-  }
-
   .folderRail {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -469,7 +576,30 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .fieldRow,
+  .formBuilderHeader {
+    grid-template-columns: 1fr;
+  }
+
+  .fieldRow {
+    display: grid;
+  }
+
+  .formBuilderHeader {
+    display: grid;
+    align-items: stretch;
+  }
+
   .toolbar {
     align-items: flex-start;
+  }
+
+  .modalBackdrop {
+    place-items: start center;
+    padding: 14px;
+  }
+
+  .modal {
+    max-height: calc(100vh - 28px);
   }
 }

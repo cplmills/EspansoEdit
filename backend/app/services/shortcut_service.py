@@ -251,6 +251,7 @@ class ShortcutService:
             word=payload.word,
             propagate_case=payload.propagate_case,
             uppercase_style=payload.uppercase_style,
+            force_mode=payload.force_mode,
             folder=self._folder_label_for_path(path),
             file=MANAGED_FILE,
             path=str(path),
@@ -276,6 +277,7 @@ class ShortcutService:
             word=payload.word,
             propagate_case=payload.propagate_case,
             uppercase_style=payload.uppercase_style,
+            force_mode=payload.force_mode,
             folder=self._folder_label_for_path(path),
             file=path.name,
             path=str(path),
@@ -303,6 +305,7 @@ class ShortcutService:
                     word=replacement.get("word") if isinstance(replacement.get("word"), bool) else None,
                     propagate_case=replacement.get("propagate_case") if isinstance(replacement.get("propagate_case"), bool) else None,
                     uppercase_style=replacement.get("uppercase_style") if isinstance(replacement.get("uppercase_style"), str) else None,
+                    force_mode=replacement.get("force_mode") if isinstance(replacement.get("force_mode"), str) else None,
                     folder=self._folder_label_for_path(path),
                     file=path.name,
                     path=str(path),
@@ -331,6 +334,8 @@ class ShortcutService:
             entry["propagate_case"] = payload.propagate_case
         if payload.uppercase_style:
             entry["uppercase_style"] = payload.uppercase_style
+        if payload.force_mode:
+            entry["force_mode"] = payload.force_mode
         return entry
 
     def _parse_form_fields(self, text: str | None) -> Any:

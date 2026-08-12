@@ -10,7 +10,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from app.models.schemas import Shortcut
 from app.utils.errors import AppError
 
-SUPPORTED_KEYS = {"trigger", "replace", "form", "form_fields", "label", "word", "propagate_case", "uppercase_style"}
+SUPPORTED_KEYS = {"trigger", "replace", "form", "form_fields", "label", "word", "propagate_case", "uppercase_style", "force_mode"}
 
 
 class YamlMatchService:
@@ -61,6 +61,7 @@ class YamlMatchService:
             word = entry.get("word") if isinstance(entry, dict) else None
             propagate_case = entry.get("propagate_case") if isinstance(entry, dict) else None
             uppercase_style = entry.get("uppercase_style") if isinstance(entry, dict) else None
+            force_mode = entry.get("force_mode") if isinstance(entry, dict) else None
             shortcuts.append(
                 Shortcut(
                     id=entry_id,
@@ -73,6 +74,7 @@ class YamlMatchService:
                     word=word if isinstance(word, bool) else None,
                     propagate_case=propagate_case if isinstance(propagate_case, bool) else None,
                     uppercase_style=uppercase_style if isinstance(uppercase_style, str) else None,
+                    force_mode=force_mode if isinstance(force_mode, str) else None,
                     folder=self.folder_for_path(path, match_root),
                     file=path.name,
                     path=str(path),
@@ -132,6 +134,8 @@ class YamlMatchService:
                 for key in ("label", "uppercase_style"):
                     if key in entry and not isinstance(entry.get(key), str):
                         errors.append({"code": "INVALID_STRING_OPTION", "message": f"{key} must be a string.", "index": index})
+                if "force_mode" in entry and entry.get("force_mode") not in {"clipboard", "keys"}:
+                    errors.append({"code": "INVALID_FORCE_MODE", "message": "force_mode must be clipboard or keys.", "index": index})
                 for key in ("word", "propagate_case"):
                     if key in entry and not isinstance(entry.get(key), bool):
                         errors.append({"code": "INVALID_BOOLEAN_OPTION", "message": f"{key} must be true or false.", "index": index})

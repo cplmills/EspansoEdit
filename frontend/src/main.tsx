@@ -21,6 +21,7 @@ type Shortcut = {
   word: boolean | null;
   propagate_case: boolean | null;
   uppercase_style: string | null;
+  force_mode: string | null;
   folder: string;
   file: string;
   path: string;
@@ -79,6 +80,7 @@ type ShortcutFormValues = {
   word: boolean;
   propagate_case: boolean;
   uppercase_style: string;
+  force_mode: string;
   folder: string;
   raw_yaml: string;
   raw: boolean;
@@ -87,6 +89,15 @@ type ShortcutFormValues = {
 type FolderItem = {
   name: string;
   count: number;
+};
+
+type FormFieldType = "text" | "multiline" | "choice" | "list";
+
+type FormFieldDraft = {
+  id: string;
+  name: string;
+  type: FormFieldType;
+  values: string;
 };
 
 const nav: { id: View; label: string }[] = [
@@ -126,6 +137,7 @@ function App() {
   const [editing, setEditing] = useState<Shortcut | "new" | null>(null);
   const [moving, setMoving] = useState<Shortcut | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(false);
@@ -280,16 +292,36 @@ function App() {
   };
 
   return (
-    <div className="shell">
+    <div className={`shell ${sidebarCollapsed ? "sidebarCollapsed" : ""}`}>
       <aside className="sidebar">
-        <div className="brand">Espanso Shortcut Manager</div>
-        <nav>
-          {nav.map((item) => (
-            <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
-              {item.label}
-            </button>
-          ))}
-        </nav>
+        <button
+          className="sidebarToggle"
+          type="button"
+          aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+          onClick={() => setSidebarCollapsed((value) => !value)}
+        >
+          {sidebarCollapsed ? ">" : "<"}
+        </button>
+        {!sidebarCollapsed && (
+          <>
+            <div className="brand">Espanso Shortcut Manager</div>
+            <nav>
+              {nav.map((item) => (
+                <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+            {view === "shortcuts" && (
+              <FolderRail
+                folders={folders}
+                selectedFolder={selectedFolder}
+                onSelect={setSelectedFolder}
+                onDropShortcut={dropShortcut}
+              />
+            )}
+          </>
+        )}
       </aside>
       <main className="content">
         {error && <Alert type="error" title={error.code} message={error.message} details={error.details} />}
@@ -298,16 +330,12 @@ function App() {
         {view === "shortcuts" && (
           <ShortcutsView
             shortcuts={filtered}
-            folders={folders}
-            selectedFolder={selectedFolder}
             search={search}
-            setSelectedFolder={setSelectedFolder}
             setSearch={setSearch}
             onAdd={() => setEditing("new")}
             onCreateFolder={() => setCreatingFolder(true)}
             onEdit={setEditing}
             onMove={setMoving}
-            onDropShortcut={dropShortcut}
             onDelete={deleteShortcut}
           />
         )}
@@ -345,20 +373,14 @@ function App() {
 
 function ShortcutsView(props: {
   shortcuts: Shortcut[];
-  folders: FolderItem[];
-  selectedFolder: string;
   search: string;
-  setSelectedFolder: (value: string) => void;
   setSearch: (value: string) => void;
   onAdd: () => void;
   onCreateFolder: () => void;
   onEdit: (shortcut: Shortcut) => void;
   onMove: (shortcut: Shortcut) => void;
-  onDropShortcut: (shortcutId: string, folder: string) => void;
   onDelete: (shortcut: Shortcut) => void;
 }) {
-  const totalCount = props.folders.reduce((sum, folder) => sum + folder.count, 0);
-
   return (
     <section>
       <div className="toolbar">
@@ -374,68 +396,83 @@ function ShortcutsView(props: {
         value={props.search}
         onChange={(event) => props.setSearch(event.target.value)}
       />
-      <div className="shortcutLayout">
-        <div className="folderRail">
-          <button className={props.selectedFolder === "All" ? "active" : ""} onClick={() => props.setSelectedFolder("All")}>
-            <span>All</span>
-            <strong>{totalCount}</strong>
-          </button>
-          {props.folders.map((folder) => (
-            <button
-              key={folder.name}
-              className={props.selectedFolder === folder.name ? "active" : ""}
-              onClick={() => props.setSelectedFolder(folder.name)}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                const shortcutId = event.dataTransfer.getData("text/plain");
-                if (shortcutId) props.onDropShortcut(shortcutId, folder.name);
-              }}
-            >
-              <span>{folder.name}</span>
-              <strong>{folder.count}</strong>
-            </button>
-          ))}
+      <div className="table">
+        <div className="row header">
+          <span>Trigger</span>
+          <span>Replacement</span>
+          <span>Source</span>
+          <span>Status</span>
+          <span></span>
         </div>
-        <div className="table">
-          <div className="row header">
-            <span>Trigger</span>
-            <span>Replacement</span>
-            <span>Source</span>
-            <span>Status</span>
-            <span></span>
+        {props.shortcuts.map((shortcut) => (
+          <div
+            className="row"
+            key={shortcut.id}
+            draggable={Boolean(shortcut.raw_yaml)}
+            onDragStart={(event) => {
+              event.dataTransfer.setData("text/plain", shortcut.id);
+              event.dataTransfer.effectAllowed = "move";
+            }}
+          >
+            <strong className="triggerText">{shortcut.trigger ?? "Advanced entry"}</strong>
+            <span className="preview">{shortcut.replace ?? shortcut.form ?? "Unsupported match type"}</span>
+            <span>{sourceLabel(shortcut)}</span>
+            <StatusPill ok={shortcut.supported} label={shortcut.form ? "Form" : shortcut.supported ? "Structured" : "YAML"} />
+            <span className="actions">
+              <button disabled={!shortcut.editable && !shortcut.raw_yaml} onClick={() => props.onEdit(shortcut)}>
+                Edit
+              </button>
+              <button disabled={!shortcut.raw_yaml} onClick={() => props.onMove(shortcut)}>
+                Move
+              </button>
+              <button disabled={!shortcut.editable} onClick={() => props.onDelete(shortcut)}>
+                Delete
+              </button>
+            </span>
           </div>
-          {props.shortcuts.map((shortcut) => (
-            <div
-              className="row"
-              key={shortcut.id}
-              draggable={Boolean(shortcut.raw_yaml)}
-              onDragStart={(event) => {
-                event.dataTransfer.setData("text/plain", shortcut.id);
-                event.dataTransfer.effectAllowed = "move";
-              }}
-            >
-              <strong>{shortcut.trigger ?? "Advanced entry"}</strong>
-              <span className="preview">{shortcut.replace ?? shortcut.form ?? "Unsupported match type"}</span>
-              <span>{sourceLabel(shortcut)}</span>
-              <StatusPill ok={shortcut.supported} label={shortcut.form ? "Form" : shortcut.supported ? "Structured" : "YAML"} />
-              <span className="actions">
-                <button disabled={!shortcut.editable && !shortcut.raw_yaml} onClick={() => props.onEdit(shortcut)}>
-                  Edit
-                </button>
-                <button disabled={!shortcut.raw_yaml} onClick={() => props.onMove(shortcut)}>
-                  Move
-                </button>
-                <button disabled={!shortcut.editable} onClick={() => props.onDelete(shortcut)}>
-                  Delete
-                </button>
-              </span>
-            </div>
-          ))}
-          {props.shortcuts.length === 0 && <div className="empty">No shortcuts found.</div>}
-        </div>
+        ))}
+        {props.shortcuts.length === 0 && <div className="empty">No shortcuts found.</div>}
       </div>
     </section>
+  );
+}
+
+function FolderRail(props: {
+  folders: FolderItem[];
+  selectedFolder: string;
+  onSelect: (folder: string) => void;
+  onDropShortcut: (shortcutId: string, folder: string) => void;
+}) {
+  const totalCount = props.folders.reduce((sum, folder) => sum + folder.count, 0);
+
+  const dropOnFolder = (event: React.DragEvent<HTMLButtonElement>, folder: string) => {
+    event.preventDefault();
+    const shortcutId = event.dataTransfer.getData("text/plain");
+    if (shortcutId) props.onDropShortcut(shortcutId, folder);
+  };
+
+  return (
+    <div className="sidebarSection">
+      <div className="sidebarSectionTitle">Folders</div>
+      <div className="folderRail">
+        <button className={props.selectedFolder === "All" ? "active" : ""} onClick={() => props.onSelect("All")}>
+          <span>All</span>
+          <strong>{totalCount}</strong>
+        </button>
+        {props.folders.map((folder) => (
+          <button
+            key={folder.name}
+            className={props.selectedFolder === folder.name ? "active" : ""}
+            onClick={() => props.onSelect(folder.name)}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => dropOnFolder(event, folder.name)}
+          >
+            <span>{folder.name}</span>
+            <strong>{folder.count}</strong>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -450,16 +487,35 @@ function ShortcutDialog(props: {
   const [replace, setReplace] = useState(props.shortcut?.replace ?? "");
   const [form, setForm] = useState(props.shortcut?.form ?? "");
   const [formFieldsYaml, setFormFieldsYaml] = useState(props.shortcut?.form_fields_yaml ?? "");
+  const [formFields, setFormFields] = useState<FormFieldDraft[]>(() => parseFormFieldsYaml(props.shortcut?.form_fields_yaml ?? ""));
   const [matchType, setMatchType] = useState<"replace" | "form">(props.shortcut?.form ? "form" : "replace");
   const [label, setLabel] = useState(props.shortcut?.label ?? "");
   const [word, setWord] = useState(Boolean(props.shortcut?.word));
   const [propagateCase, setPropagateCase] = useState(Boolean(props.shortcut?.propagate_case));
   const [uppercaseStyle, setUppercaseStyle] = useState(props.shortcut?.uppercase_style ?? "");
+  const [forceMode, setForceMode] = useState(props.shortcut?.force_mode ?? "");
   const [folder, setFolder] = useState(props.shortcut?.folder ?? props.initialFolder);
   const [rawYaml, setRawYaml] = useState(props.shortcut?.raw_yaml ?? "");
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
   const raw = Boolean(props.shortcut && !props.shortcut.supported);
+
+  const changeMatchType = (nextType: "replace" | "form") => {
+    if (nextType === "form" && !form && replace) setForm(replace);
+    if (nextType === "replace" && !replace && form) setReplace(form);
+    setMatchType(nextType);
+  };
+
+  const updateFormFields = (nextFields: FormFieldDraft[]) => {
+    setFormFields(nextFields);
+    setFormFieldsYaml(buildFormFieldsYaml(nextFields));
+  };
+
+  const addTemplateFields = () => {
+    const existing = new Set(formFields.map((field) => field.name.trim()).filter(Boolean));
+    const names = extractFormPlaceholders(form).filter((name) => !existing.has(name));
+    if (names.length > 0) updateFormFields([...formFields, ...names.map((name) => createFormField(name))]);
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -491,6 +547,7 @@ function ShortcutDialog(props: {
       word,
       propagate_case: propagateCase,
       uppercase_style: uppercaseStyle,
+      force_mode: forceMode,
       folder,
       raw_yaml: rawYaml,
       raw
@@ -503,9 +560,14 @@ function ShortcutDialog(props: {
       <form className="modal" onSubmit={submit}>
         <div className="toolbar">
           <h2>{props.shortcut ? "Edit Shortcut" : "Add Shortcut"}</h2>
-          <button type="button" onClick={props.onClose}>
-            Close
-          </button>
+          <div className="toolbarActions">
+            <button className="primary" disabled={saving} type="submit">
+              {saving ? "Saving..." : "Save"}
+            </button>
+            <button type="button" onClick={props.onClose}>
+              Close
+            </button>
+          </div>
         </div>
         {props.shortcut && <div className="source">Source: {props.shortcut.file}</div>}
         {localError && <div className="formError">{localError}</div>}
@@ -522,7 +584,7 @@ function ShortcutDialog(props: {
             </label>
             <label>
               Match type
-              <select value={matchType} onChange={(event) => setMatchType(event.target.value as "replace" | "form")}>
+              <select value={matchType} onChange={(event) => changeMatchType(event.target.value as "replace" | "form")}>
                 <option value="replace">Text replacement</option>
                 <option value="form">Form</option>
               </select>
@@ -539,11 +601,16 @@ function ShortcutDialog(props: {
             ) : (
               <>
                 <label>
-                  Form template
+                  <LabelWithInfo text="Form template" info="Use double square brackets for fields Espanso should ask for, like [[name]], [[order_id]], or [[message]]. Reuse the same placeholder wherever the same answer should appear. Add matching field options below when you need textarea, choice, or list controls." />
                   <textarea value={form} onChange={(event) => setForm(event.target.value)} rows={8} placeholder={"Hi [[name]],\n\nYour order [[order_id]] is ready."} />
                 </label>
+                <FormFieldBuilder
+                  fields={formFields}
+                  onChange={updateFormFields}
+                  onAddTemplateFields={addTemplateFields}
+                />
                 <label>
-                  Form fields YAML
+                  <LabelWithInfo text="Form fields YAML" info="This is the Espanso form_fields mapping generated by the visual builder. Edit it directly for advanced Espanso form options; using the builder again will regenerate this YAML." />
                   <textarea className="codeInput compactCodeInput" value={formFieldsYaml} onChange={(event) => setFormFieldsYaml(event.target.value)} rows={7} placeholder={"name:\n  type: text\norder_id:\n  type: text"} />
                 </label>
               </>
@@ -572,6 +639,14 @@ function ShortcutDialog(props: {
                 <option value="uppercase">Uppercase</option>
               </select>
             </label>
+            <label>
+              <LabelWithInfo text="Force mode" info="Default uses Espanso's global injection setting. Clipboard pastes the replacement through the clipboard, which is usually faster for long text but may briefly overwrite clipboard contents. Keys types the replacement as keystrokes, which can work better in apps that block clipboard paste but is slower." />
+              <select value={forceMode} onChange={(event) => setForceMode(event.target.value)}>
+                <option value="">Default</option>
+                <option value="clipboard">Clipboard</option>
+                <option value="keys">Keys</option>
+              </select>
+            </label>
           </>
         )}
         <button className="primary" disabled={saving} type="submit">
@@ -582,12 +657,99 @@ function ShortcutDialog(props: {
   );
 }
 
-function InfoButton({ text }: { text: string }) {
+function FormFieldBuilder(props: {
+  fields: FormFieldDraft[];
+  onChange: (fields: FormFieldDraft[]) => void;
+  onAddTemplateFields: () => void;
+}) {
+  const updateField = (id: string, patch: Partial<FormFieldDraft>) => {
+    props.onChange(props.fields.map((field) => (field.id === id ? { ...field, ...patch } : field)));
+  };
+
+  const removeField = (id: string) => {
+    props.onChange(props.fields.filter((field) => field.id !== id));
+  };
+
   return (
-    <button className="infoButton" type="button" aria-label={text}>
-      i
-      <span className="tooltip" role="tooltip">{text}</span>
-    </button>
+    <div className="formBuilder">
+      <div className="formBuilderHeader">
+        <LabelWithInfo text="Form fields" info="Define the controls Espanso shows when this form expands. Add from template creates fields for placeholders in the form template; Add field creates one manually." />
+        <div className="toolbarActions">
+          <button type="button" onClick={props.onAddTemplateFields}>Add from template</button>
+          <button type="button" onClick={() => props.onChange([...props.fields, createFormField()])}>Add field</button>
+        </div>
+      </div>
+      {props.fields.length === 0 && <div className="empty compactEmpty">No visual fields configured.</div>}
+      {props.fields.map((field) => (
+        <div className="fieldRow" key={field.id}>
+          <input aria-label="Field name" value={field.name} onChange={(event) => updateField(field.id, { name: event.target.value })} placeholder="field_name" />
+          <div className="fieldTypeControl">
+            <select aria-label="Field type" value={field.type} onChange={(event) => updateField(field.id, { type: event.target.value as FormFieldType })}>
+              <option value="text">Text</option>
+              <option value="multiline">Multiline</option>
+              <option value="choice">Choice</option>
+              <option value="list">List</option>
+            </select>
+            <InfoButton text="Text creates a single-line input. Multiline creates a larger text box. Choice and List use the options you enter below, one option per line." />
+          </div>
+          <button type="button" onClick={() => removeField(field.id)}>Remove</button>
+          {(field.type === "choice" || field.type === "list") && (
+            <div className="fieldValuesGroup">
+              <LabelWithInfo text="Options" info="For Choice or List fields, enter each selectable value on its own line. These become the values Espanso shows in the form." />
+              <textarea
+                className="fieldValues"
+                value={field.values}
+                onChange={(event) => updateField(field.id, { values: event.target.value })}
+                placeholder="One option per line"
+                rows={3}
+              />
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LabelWithInfo({ text, info }: { text: string; info: string }) {
+  return (
+    <span className="labelWithInfo">
+      {text}
+      <InfoButton text={info} />
+    </span>
+  );
+}
+
+function InfoButton({ text }: { text: string }) {
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+
+  const show = (target: HTMLElement) => {
+    const rect = target.getBoundingClientRect();
+    const tooltipWidth = Math.min(320, window.innerWidth - 32);
+    const left = Math.min(Math.max(16, rect.left + rect.width / 2 - tooltipWidth / 2), window.innerWidth - tooltipWidth - 16);
+    const top = Math.min(rect.bottom + 8, window.innerHeight - 180);
+    setPosition({ left, top });
+  };
+
+  return (
+    <>
+      <button
+        className="infoButton"
+        type="button"
+        aria-label={text}
+        onBlur={() => setPosition(null)}
+        onFocus={(event) => show(event.currentTarget)}
+        onMouseEnter={(event) => show(event.currentTarget)}
+        onMouseLeave={() => setPosition(null)}
+      >
+        i
+      </button>
+      {position && (
+        <span className="tooltip visibleTooltip" role="tooltip" style={{ left: position.left, top: position.top }}>
+          {text}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -660,16 +822,24 @@ function FolderDialog(props: { folders: FolderItem[]; onClose: () => void; onCre
 }
 
 function FolderInput(props: { value: string; folders: FolderItem[]; onChange: (value: string) => void }) {
+  const folderNames = ["Root", ...props.folders.filter((folder) => folder.name !== "Root").map((folder) => folder.name)];
+  const selectValue = folderNames.includes(props.value) ? props.value : "__custom__";
+
   return (
-    <>
-      <input list="folder-options" value={props.value} onChange={(event) => props.onChange(event.target.value)} placeholder="Root or work/email" />
-      <datalist id="folder-options">
-        <option value="Root" />
-        {props.folders.filter((folder) => folder.name !== "Root").map((folder) => (
-          <option key={folder.name} value={folder.name} />
+    <div className="folderInput">
+      <select
+        value={selectValue}
+        onChange={(event) => props.onChange(event.target.value === "__custom__" ? "" : event.target.value)}
+      >
+        {folderNames.map((folder) => (
+          <option key={folder} value={folder}>{folder}</option>
         ))}
-      </datalist>
-    </>
+        <option value="__custom__">Custom folder...</option>
+      </select>
+      {selectValue === "__custom__" && (
+        <input value={props.value} onChange={(event) => props.onChange(event.target.value)} placeholder="work/email" />
+      )}
+    </div>
   );
 }
 
@@ -795,12 +965,94 @@ function toStructuredPayload(values: ShortcutFormValues) {
     label: values.label.trim() || null,
     word: values.word,
     propagate_case: values.propagate_case,
-    uppercase_style: values.uppercase_style || null
+    uppercase_style: values.uppercase_style || null,
+    force_mode: values.force_mode || null
   };
 }
 
 function sourceLabel(shortcut: Shortcut) {
   return shortcut.folder === "Root" ? shortcut.file : `${shortcut.folder}/${shortcut.file}`;
+}
+
+function createFormField(name = ""): FormFieldDraft {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name,
+    type: "text",
+    values: ""
+  };
+}
+
+function extractFormPlaceholders(template: string) {
+  const names = new Set<string>();
+  for (const match of template.matchAll(/\[\[([a-zA-Z0-9_-]+)\]\]/g)) {
+    names.add(match[1]);
+  }
+  return [...names];
+}
+
+function buildFormFieldsYaml(fields: FormFieldDraft[]) {
+  const validFields = fields.filter((field) => field.name.trim());
+  return validFields.map((field) => buildFormFieldYaml(field)).join("");
+}
+
+function buildFormFieldYaml(field: FormFieldDraft) {
+  const name = field.name.trim();
+  const lines = [`${name}:`];
+  if (field.type === "multiline") {
+    lines.push("  type: text", "  multiline: true");
+  } else {
+    lines.push(`  type: ${field.type}`);
+  }
+  if (field.type === "choice" || field.type === "list") {
+    const values = field.values.split("\n").map((value) => value.trim()).filter(Boolean);
+    if (values.length > 0) {
+      lines.push("  values:");
+      for (const value of values) lines.push(`    - ${yamlScalar(value)}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function parseFormFieldsYaml(text: string): FormFieldDraft[] {
+  const fields: FormFieldDraft[] = [];
+  let current: FormFieldDraft | null = null;
+  let readingValues = false;
+
+  for (const line of text.split("\n")) {
+    const fieldMatch = line.match(/^([A-Za-z0-9_-]+):\s*$/);
+    if (fieldMatch) {
+      current = createFormField(fieldMatch[1]);
+      fields.push(current);
+      readingValues = false;
+      continue;
+    }
+    if (!current) continue;
+    const typeMatch = line.match(/^\s+type:\s*(text|choice|list)\s*$/);
+    if (typeMatch) {
+      current.type = typeMatch[1] as FormFieldType;
+      readingValues = false;
+      continue;
+    }
+    if (/^\s+multiline:\s*true\s*$/.test(line)) {
+      current.type = "multiline";
+      readingValues = false;
+      continue;
+    }
+    if (/^\s+values:\s*$/.test(line)) {
+      readingValues = true;
+      continue;
+    }
+    const valueMatch = line.match(/^\s+-\s*(.+)\s*$/);
+    if (readingValues && valueMatch) {
+      current.values = `${current.values}${current.values ? "\n" : ""}${valueMatch[1].replace(/^["']|["']$/g, "")}`;
+    }
+  }
+  return fields;
+}
+
+function yamlScalar(value: string) {
+  return /^[A-Za-z0-9 _.-]+$/.test(value) ? value : JSON.stringify(value);
 }
 
 function fileName(path: string) {

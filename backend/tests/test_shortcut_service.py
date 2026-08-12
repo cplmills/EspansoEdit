@@ -75,6 +75,14 @@ def test_adding_shortcut_with_common_options(service: ShortcutService, espanso_r
     assert "uppercase_style: capitalize" in content
 
 
+def test_adding_shortcut_with_force_mode(service: ShortcutService, espanso_root: Path) -> None:
+    shortcut, _ = service.add_shortcut(ShortcutCreate(trigger=":clip", replace="Clipboard text", force_mode="clipboard"))
+
+    content = (espanso_root / "match" / "espanso-shortcut-manager.yml").read_text(encoding="utf-8")
+    assert shortcut.force_mode == "clipboard"
+    assert "force_mode: clipboard" in content
+
+
 def test_adding_form_shortcut(service: ShortcutService, espanso_root: Path) -> None:
     shortcut, _ = service.add_shortcut(
         ShortcutCreate(trigger=":reply", form="Hi [[name]],\n\n[[message]]", label="Reply form")
