@@ -224,6 +224,20 @@ h2 {
   grid-template-columns: minmax(180px, 1fr) minmax(160px, 1fr) 120px 110px;
 }
 
+.packageRow {
+  grid-template-columns: minmax(160px, 0.8fr) minmax(220px, 1.5fr) 110px 180px;
+}
+
+.packageName {
+  display: grid;
+  gap: 3px;
+}
+
+.packageName span {
+  color: #5b6876;
+  font-size: 13px;
+}
+
 .row:last-child {
   border-bottom: 0;
 }
@@ -308,6 +322,35 @@ h2 {
 .panel {
   margin-top: 18px;
   padding: 16px;
+}
+
+.packageInstall {
+  display: grid;
+  gap: 14px;
+  margin-top: 0;
+  margin-bottom: 18px;
+}
+
+.packageInstall label {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  font-weight: 700;
+}
+
+.packageInstall input {
+  width: 100%;
+  border: 1px solid #c9d2dc;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-weight: 400;
+  background: #ffffff;
+}
+
+.packageInstallGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .panel pre,
@@ -560,6 +603,7 @@ h2 {
 
   .row,
   .backupRow,
+  .packageRow,
   .healthRow {
     grid-template-columns: 1fr;
   }
@@ -573,6 +617,10 @@ h2 {
   }
 
   .optionGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .packageInstallGrid {
     grid-template-columns: 1fr;
   }
 

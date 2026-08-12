@@ -2,7 +2,7 @@ import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-type View = "shortcuts" | "config" | "health" | "backups";
+type View = "shortcuts" | "packages" | "config" | "health" | "backups";
 
 type ApiError = {
   code: string;
@@ -91,6 +91,38 @@ type FolderItem = {
   count: number;
 };
 
+type PackageItem = {
+  name: string;
+  path: string;
+  file_count: number;
+  shortcut_count: number;
+  yaml_valid: boolean;
+  version: string | null;
+  description: string | null;
+  source: string | null;
+};
+
+type PackageActionResult = {
+  success: boolean;
+  reload: Record<string, unknown> | null;
+  command: string[];
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  package?: PackageItem | null;
+};
+
+type PackageInstallValues = {
+  name: string;
+  git: string;
+  version: string;
+  branch: string;
+  external: boolean;
+  force: boolean;
+  refresh_index: boolean;
+  use_native_git: boolean;
+};
+
 type FormFieldType = "text" | "multiline" | "choice" | "list";
 
 type FormFieldDraft = {
@@ -102,6 +134,7 @@ type FormFieldDraft = {
 
 const nav: { id: View; label: string }[] = [
   { id: "shortcuts", label: "Shortcuts" },
+  { id: "packages", label: "Packages" },
   { id: "config", label: "Config" },
   { id: "health", label: "Health" },
   { id: "backups", label: "Backups" }
@@ -131,6 +164,7 @@ function App() {
   const [folderNames, setFolderNames] = useState<string[]>(["Root"]);
   const [status, setStatus] = useState<Status | null>(null);
   const [backups, setBackups] = useState<Backup[]>([]);
+  const [packages, setPackages] = useState<PackageItem[]>([]);
   const [config, setConfig] = useState<ConfigPayload | null>(null);
   const [search, setSearch] = useState("");
   const [selectedFolder, setSelectedFolder] = useState("All");
@@ -155,6 +189,7 @@ function App() {
       setShortcuts(nextShortcuts);
       setFolderNames(nextFolders);
       if (view === "backups") setBackups(await api<Backup[]>("/api/backups"));
+      if (view === "packages") setPackages(await api<PackageItem[]>("/api/packages"));
       if (view === "config") setConfig(await api<ConfigPayload>("/api/config"));
     } catch (err) {
       setError(normalizeError(err));
@@ -173,6 +208,9 @@ function App() {
     }
     if (view === "config") {
       api<ConfigPayload>("/api/config").then(setConfig).catch((err) => setError(normalizeError(err)));
+    }
+    if (view === "packages") {
+      api<PackageItem[]>("/api/packages").then(setPackages).catch((err) => setError(normalizeError(err)));
     }
   }, [view]);
 
@@ -291,6 +329,46 @@ function App() {
     }
   };
 
+  const installPackage = async (values: PackageInstallValues) => {
+    setNotice("");
+    setError(null);
+    try {
+      const result = await api<PackageActionResult>("/api/packages", { method: "POST", body: JSON.stringify(values) });
+      setNotice(`Package installed. ${reloadMessage(result.reload)}`);
+      setPackages(await api<PackageItem[]>("/api/packages"));
+      await refresh();
+    } catch (err) {
+      setError(normalizeError(err));
+    }
+  };
+
+  const updatePackage = async (packageName: string) => {
+    setNotice("");
+    setError(null);
+    try {
+      const result = await api<PackageActionResult>(`/api/packages/${encodeURIComponent(packageName)}/update`, { method: "POST" });
+      setNotice(`Package updated. ${reloadMessage(result.reload)}`);
+      setPackages(await api<PackageItem[]>("/api/packages"));
+      await refresh();
+    } catch (err) {
+      setError(normalizeError(err));
+    }
+  };
+
+  const removePackage = async (packageName: string) => {
+    if (!window.confirm(`Remove package ${packageName}?`)) return;
+    setNotice("");
+    setError(null);
+    try {
+      const result = await api<PackageActionResult>(`/api/packages/${encodeURIComponent(packageName)}`, { method: "DELETE" });
+      setNotice(`Package removed. ${reloadMessage(result.reload)}`);
+      setPackages(await api<PackageItem[]>("/api/packages"));
+      await refresh();
+    } catch (err) {
+      setError(normalizeError(err));
+    }
+  };
+
   return (
     <div className={`shell ${sidebarCollapsed ? "sidebarCollapsed" : ""}`}>
       <aside className="sidebar">
@@ -341,6 +419,7 @@ function App() {
         )}
         {view === "health" && <HealthView status={status} onValidate={runValidation} />}
         {view === "backups" && <BackupsView backups={backups} onRestore={restore} />}
+        {view === "packages" && <PackagesView packages={packages} onInstall={installPackage} onUpdate={updatePackage} onRemove={removePackage} />}
         {view === "config" && <ConfigView config={config} />}
       </main>
       {editing && (
@@ -882,6 +961,132 @@ function HealthRow({ label, value, ok }: { label: string; value: string; ok: boo
       <strong>{value}</strong>
       <StatusPill ok={ok} label={ok ? "OK" : "Check"} />
     </div>
+  );
+}
+
+function PackagesView(props: {
+  packages: PackageItem[];
+  onInstall: (values: PackageInstallValues) => Promise<void>;
+  onUpdate: (packageName: string) => Promise<void>;
+  onRemove: (packageName: string) => Promise<void>;
+}) {
+  return (
+    <section>
+      <div className="toolbar">
+        <h1>Packages</h1>
+      </div>
+      <PackageInstallPanel onInstall={props.onInstall} />
+      <div className="table">
+        <div className="row packageRow header">
+          <span>Package</span>
+          <span>Details</span>
+          <span>Status</span>
+          <span></span>
+        </div>
+        {props.packages.map((item) => (
+          <div className="row packageRow" key={item.name}>
+            <div className="packageName">
+              <strong>{item.name}</strong>
+              <span>{item.version ? `Version ${item.version}` : "Installed package"}</span>
+            </div>
+            <span className="preview">{item.description ?? `${item.shortcut_count} shortcuts across ${item.file_count} files`}</span>
+            <StatusPill ok={item.yaml_valid} label={item.yaml_valid ? "Valid" : "Check"} />
+            <span className="actions">
+              <button onClick={() => props.onUpdate(item.name)}>Update</button>
+              <button onClick={() => props.onRemove(item.name)}>Remove</button>
+            </span>
+          </div>
+        ))}
+        {props.packages.length === 0 && <div className="empty">No packages installed.</div>}
+      </div>
+    </section>
+  );
+}
+
+function PackageInstallPanel({ onInstall }: { onInstall: (values: PackageInstallValues) => Promise<void> }) {
+  const [values, setValues] = useState<PackageInstallValues>({
+    name: "",
+    git: "",
+    version: "",
+    branch: "",
+    external: false,
+    force: false,
+    refresh_index: false,
+    use_native_git: false
+  });
+  const [installing, setInstalling] = useState(false);
+  const [localError, setLocalError] = useState("");
+
+  const update = (patch: Partial<PackageInstallValues>) => setValues((current) => ({ ...current, ...patch }));
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!values.name.trim() && !values.git.trim()) {
+      setLocalError("Enter a package name or Git repository URL.");
+      return;
+    }
+    setInstalling(true);
+    setLocalError("");
+    await onInstall({
+      ...values,
+      name: values.name.trim(),
+      git: values.git.trim(),
+      version: values.version.trim(),
+      branch: values.branch.trim()
+    });
+    setInstalling(false);
+  };
+
+  return (
+    <form className="panel packageInstall" onSubmit={submit}>
+      <div className="formBuilderHeader">
+        <LabelWithInfo text="Install package" info="Install an Espanso Hub package by name, or install from a Git repository by adding a Git URL. Espanso handles the package download and writes it into match/packages." />
+        <button className="primary" disabled={installing} type="submit">
+          {installing ? "Installing..." : "Install"}
+        </button>
+      </div>
+      {localError && <div className="formError">{localError}</div>}
+      <div className="packageInstallGrid">
+        <label>
+          <LabelWithInfo text="Package name" info="Use the Espanso Hub package name, such as a package listed in the Hub. For Git installs, use the package folder name expected by that repository." />
+          <input value={values.name} onChange={(event) => update({ name: event.target.value })} placeholder="basic-emojis" />
+        </label>
+        <label>
+          <LabelWithInfo text="Git URL" info="Optional. Install from a Git repository instead of the verified Espanso Hub index. Enable External repository for non-verified sources." />
+          <input value={values.git} onChange={(event) => update({ git: event.target.value })} placeholder="https://github.com/user/espanso-package.git" />
+        </label>
+        <label>
+          <LabelWithInfo text="Version" info="Optional. Pin the package install to a specific package version instead of the latest version." />
+          <input value={values.version} onChange={(event) => update({ version: event.target.value })} placeholder="Optional" />
+        </label>
+        <label>
+          <LabelWithInfo text="Git branch" info="Optional. Use this when installing from a Git repository and the package lives on a branch other than the default branch." />
+          <input value={values.branch} onChange={(event) => update({ branch: event.target.value })} placeholder="main" />
+        </label>
+      </div>
+      <div className="optionGrid">
+        <label className="checkRow">
+          <input type="checkbox" checked={values.external} onChange={(event) => update({ external: event.target.checked })} />
+          <span>External repository</span>
+          <InfoButton text="Allows installing packages from non-verified repositories. Use this for Git sources you trust." />
+        </label>
+        <label className="checkRow">
+          <input type="checkbox" checked={values.force} onChange={(event) => update({ force: event.target.checked })} />
+          <span>Force reinstall</span>
+          <InfoButton text="Overwrites the package if it is already installed. Useful when retrying an install or replacing local package files." />
+        </label>
+        <label className="checkRow">
+          <input type="checkbox" checked={values.refresh_index} onChange={(event) => update({ refresh_index: event.target.checked })} />
+          <span>Refresh index</span>
+          <InfoButton text="Requests a fresh Espanso Hub package index before installing, instead of using Espanso's cached index." />
+        </label>
+        <label className="checkRow">
+          <input type="checkbox" checked={values.use_native_git} onChange={(event) => update({ use_native_git: event.target.checked })} />
+          <span>Use native git</span>
+          <InfoButton text="Tells Espanso to use the installed git command for Git package installs. Use this if the default download method fails." />
+        </label>
+      </div>
+    </form>
   );
 }
 

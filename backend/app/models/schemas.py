@@ -88,6 +88,37 @@ class FolderCreate(BaseModel):
     folder: str
 
 
+class PackageItem(BaseModel):
+    name: str
+    path: str
+    file_count: int
+    shortcut_count: int
+    yaml_valid: bool
+    version: str | None = None
+    description: str | None = None
+    source: str | None = None
+
+
+class PackageInstall(BaseModel):
+    name: str | None = None
+    git: str | None = None
+    version: str | None = None
+    branch: str | None = None
+    external: bool = False
+    force: bool = False
+    refresh_index: bool = False
+    use_native_git: bool = False
+
+
+class PackageActionResult(ApiResult):
+    reload: dict[str, Any] | None = None
+    command: list[str] = Field(default_factory=list)
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int = 0
+    package: PackageItem | None = None
+
+
 class MutationResult(ApiResult):
     reload: dict[str, Any] | None = None
     shortcut: Shortcut | None = None

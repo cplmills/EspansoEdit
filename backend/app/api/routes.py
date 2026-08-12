@@ -4,17 +4,23 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends
 
-from app.models.schemas import BackupItem, EspansoStatus, FolderCreate, MutationResult, Shortcut, ShortcutCreate, ShortcutMove, ShortcutRawUpdate, ShortcutUpdate, ValidationResult
+from app.models.schemas import BackupItem, EspansoStatus, FolderCreate, MutationResult, PackageActionResult, PackageInstall, PackageItem, Shortcut, ShortcutCreate, ShortcutMove, ShortcutRawUpdate, ShortcutUpdate, ValidationResult
+from app.services.package_service import EspansoPackageService
 from app.services.shortcut_service import ShortcutService
 from app.utils.errors import AppError, http_error
 
 router = APIRouter(prefix="/api")
 
 _service = ShortcutService()
+_package_service = EspansoPackageService(_service.discovery, _service.reloader)
 
 
 def get_service() -> ShortcutService:
     return _service
+
+
+def get_package_service() -> EspansoPackageService:
+    return _package_service
 
 
 @router.get("/status", response_model=EspansoStatus)
@@ -42,6 +48,38 @@ def folders(service: ShortcutService = Depends(get_service)) -> list[str]:
 def create_folder(payload: FolderCreate, service: ShortcutService = Depends(get_service)) -> dict[str, str]:
     try:
         return {"folder": service.create_folder(payload.folder)}
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.get("/packages", response_model=list[PackageItem])
+def packages(service: EspansoPackageService = Depends(get_package_service)) -> list[PackageItem]:
+    try:
+        return service.list_packages()
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/packages", response_model=PackageActionResult)
+def install_package(payload: PackageInstall, service: EspansoPackageService = Depends(get_package_service)) -> PackageActionResult:
+    try:
+        return PackageActionResult(**service.install_package(payload))
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/packages/{package_name}/update", response_model=PackageActionResult)
+def update_package(package_name: str, service: EspansoPackageService = Depends(get_package_service)) -> PackageActionResult:
+    try:
+        return PackageActionResult(**service.update_package(package_name))
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.delete("/packages/{package_name}", response_model=PackageActionResult)
+def uninstall_package(package_name: str, service: EspansoPackageService = Depends(get_package_service)) -> PackageActionResult:
+    try:
+        return PackageActionResult(**service.uninstall_package(package_name))
     except AppError as exc:
         raise http_error(exc) from exc
 
