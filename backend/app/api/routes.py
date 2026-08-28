@@ -6,8 +6,14 @@ from fastapi import APIRouter, Depends
 
 from app.models.schemas import (
     BackupItem,
+    AppSettings,
     EspansoStatus,
     FolderCreate,
+    FolderExport,
+    FolderExportResult,
+    GitShortcutSyncResult,
+    GitShortcutSyncSource,
+    GitShortcutSyncValidation,
     MacOSTextReplacementImport,
     MacOSTextReplacementImportResult,
     MacOSTextReplacementPreview,
@@ -15,6 +21,7 @@ from app.models.schemas import (
     PackageActionResult,
     PackageInstall,
     PackageItem,
+    SettingsUpdate,
     Shortcut,
     ShortcutCreate,
     ShortcutMove,
@@ -24,6 +31,7 @@ from app.models.schemas import (
     ValidationResult,
 )
 from app.services.package_service import EspansoPackageService
+from app.services.settings_service import AppSettingsService
 from app.services.shortcut_service import ShortcutService
 from app.utils.errors import AppError, http_error
 
@@ -31,6 +39,7 @@ router = APIRouter(prefix="/api")
 
 _service = ShortcutService()
 _package_service = EspansoPackageService(_service.discovery, _service.reloader)
+_settings_service = AppSettingsService(_service.discovery, _service.reloader)
 
 
 def get_service() -> ShortcutService:
@@ -41,9 +50,52 @@ def get_package_service() -> EspansoPackageService:
     return _package_service
 
 
+def get_settings_service() -> AppSettingsService:
+    return _settings_service
+
+
+def sync_github_shortcuts_on_startup() -> None:
+    _settings_service.sync_git_shortcuts_on_startup()
+
+
 @router.get("/status", response_model=EspansoStatus)
 def status(service: ShortcutService = Depends(get_service)) -> dict:
     return service.status()
+
+
+@router.get("/settings", response_model=AppSettings)
+def settings(service: AppSettingsService = Depends(get_settings_service)) -> AppSettings:
+    try:
+        return service.get_settings()
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.put("/settings", response_model=AppSettings)
+def update_settings(payload: SettingsUpdate, service: AppSettingsService = Depends(get_settings_service)) -> AppSettings:
+    try:
+        return service.update_settings(payload)
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/settings/git-sync/validate", response_model=GitShortcutSyncValidation)
+def validate_git_sync(
+    payload: GitShortcutSyncSource,
+    service: AppSettingsService = Depends(get_settings_service),
+) -> GitShortcutSyncValidation:
+    try:
+        return service.validate_git_sync(payload)
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/settings/git-sync/sync", response_model=GitShortcutSyncResult)
+def sync_git_shortcuts(service: AppSettingsService = Depends(get_settings_service)) -> GitShortcutSyncResult:
+    try:
+        return service.sync_git_shortcuts()
+    except AppError as exc:
+        raise http_error(exc) from exc
 
 
 @router.get("/shortcuts", response_model=list[Shortcut])
@@ -66,6 +118,14 @@ def folders(service: ShortcutService = Depends(get_service)) -> list[str]:
 def create_folder(payload: FolderCreate, service: ShortcutService = Depends(get_service)) -> dict[str, str]:
     try:
         return {"folder": service.create_folder(payload.folder)}
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/folders/export", response_model=FolderExportResult)
+def export_folder(payload: FolderExport, service: ShortcutService = Depends(get_service)) -> FolderExportResult:
+    try:
+        return service.export_folder(payload)
     except AppError as exc:
         raise http_error(exc) from exc
 

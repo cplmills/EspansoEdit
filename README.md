@@ -84,7 +84,7 @@ release/mac-arm64/EspansoEdit.app
 The generated DMG is written to:
 
 ```text
-release/EspansoEdit-0.1.3-arm64.dmg
+release/EspansoEdit-2.0.0-arm64.dmg
 ```
 
 The desktop app starts the backend on `127.0.0.1:8765`, loads the built frontend, and adds a macOS menu bar/tray item with quick actions for opening the app and the Espanso match folder. Local development builds are unsigned; use a Developer ID certificate and notarization before distributing outside this Mac.

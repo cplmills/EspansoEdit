@@ -5,7 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import router
+from app.api.routes import router, sync_github_shortcuts_on_startup
 from app.utils.errors import AppError
 
 app = FastAPI(title="Espanso Shortcut Manager", version="0.1.0")
@@ -19,6 +19,11 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+
+@app.on_event("startup")
+def startup_sync() -> None:
+    sync_github_shortcuts_on_startup()
 
 
 @app.exception_handler(AppError)
@@ -44,4 +49,3 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
 @app.get("/")
 def root() -> dict[str, str]:
     return {"name": "Espanso Shortcut Manager", "api": "/api/status"}
-

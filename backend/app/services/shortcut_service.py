@@ -14,6 +14,8 @@ from app.models.schemas import (
     MacOSTextReplacementImportResult,
     MacOSTextReplacementPreview,
     MacOSTextReplacementSkip,
+    FolderExport,
+    FolderExportResult,
     Shortcut,
     ShortcutCreate,
     ShortcutMove,
@@ -222,6 +224,46 @@ class ShortcutService:
             raise AppError("PATH_NOT_ALLOWED", "Invalid target folder.", status_code=403)
         target.mkdir(parents=True, exist_ok=True)
         return relative
+
+    def export_folder(self, payload: FolderExport) -> FolderExportResult:
+        folder = self._folder_label(payload.folder)
+        folder_path = self._folder_path(payload.folder)
+        matches = CommentedSeq()
+        if folder_path.exists():
+            for path in self._folder_match_files(folder_path):
+                data = self.yaml.load_file(path)
+                file_matches = data.get("matches") if isinstance(data, dict) else None
+                if not isinstance(file_matches, list):
+                    continue
+                for entry in file_matches:
+                    matches.append(copy.deepcopy(entry))
+        if not matches:
+            raise AppError("FOLDER_EMPTY", "No Espanso shortcuts were found in that folder.", status_code=404)
+
+        export_data = CommentedMap({"matches": matches})
+        filename = f"{self._export_filename(folder)}.yml"
+        content = self.yaml.dumps(export_data)
+        saved_path = self._save_export(payload.destination_folder, filename, content) if payload.destination_folder else None
+        return FolderExportResult(
+            folder=folder,
+            filename=filename,
+            content=content,
+            shortcut_count=len(matches),
+            saved_path=str(saved_path) if saved_path else None,
+        )
+
+    def _save_export(self, destination_folder: str, filename: str, content: str) -> Path:
+        destination = Path(destination_folder).expanduser().resolve()
+        if not destination.exists() or not destination.is_dir():
+            raise AppError("EXPORT_DESTINATION_INVALID", "Choose an existing folder for the export.", status_code=422)
+        target = (destination / filename).resolve()
+        if target.parent != destination:
+            raise AppError("EXPORT_DESTINATION_INVALID", "Invalid export destination.", status_code=422)
+        try:
+            target.write_text(normalize_newlines(content), encoding="utf-8")
+        except OSError as exc:
+            raise AppError("EXPORT_SAVE_FAILED", "The export could not be saved to that folder.", str(exc), 500) from exc
+        return target
 
     def preview_macos_text_replacements(self) -> MacOSTextReplacementPreview:
         return self.macos_importer.preview()
@@ -775,6 +817,25 @@ class ShortcutService:
         target_dir = paths.match_path if relative == "" else paths.match_path / relative
         return self._safe_child(target_dir, MANAGED_FILE)
 
+    def _folder_path(self, folder: str | None) -> Path:
+        paths = self._paths_or_error()
+        relative = self._normalize_folder(folder)
+        target = paths.match_path if relative == "" else paths.match_path / relative
+        root = paths.match_path.resolve()
+        resolved = target.resolve()
+        if not (resolved == root or root in resolved.parents):
+            raise AppError("PATH_NOT_ALLOWED", "Invalid folder path.", status_code=403)
+        return resolved
+
+    def _folder_match_files(self, folder_path: Path) -> list[Path]:
+        if not folder_path.exists() or not folder_path.is_dir():
+            return []
+        return sorted(
+            path
+            for path in folder_path.iterdir()
+            if path.is_file() and path.suffix.lower() in {".yml", ".yaml"} and not self._is_backup_path(path)
+        )
+
     def _normalize_folder(self, folder: str | None) -> str:
         value = (folder or "").strip().strip("/")
         if not value or value.lower() == "root":
@@ -785,6 +846,16 @@ class ShortcutService:
         if parts and parts[0] == "packages":
             raise AppError("INVALID_FOLDER", "The packages folder is reserved by Espanso.", status_code=422)
         return "/".join(parts)
+
+    def _folder_label(self, folder: str | None) -> str:
+        relative = self._normalize_folder(folder)
+        return "Root" if relative == "" else relative
+
+    def _export_filename(self, folder: str) -> str:
+        slug = "root" if folder == "Root" else folder.lower().replace("/", "-")
+        slug = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in slug)
+        slug = "-".join(part for part in slug.split("-") if part)
+        return f"espanso-{slug or 'shortcuts'}"
 
     def _folder_label_for_path(self, path: Path) -> str:
         paths = self._paths_or_error()

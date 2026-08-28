@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.models.schemas import MacOSTextReplacementImport, ShortcutCreate, ShortcutMove, ShortcutRawCreate, ShortcutRawUpdate, ShortcutUpdate
+from app.models.schemas import FolderExport, MacOSTextReplacementImport, ShortcutCreate, ShortcutMove, ShortcutRawCreate, ShortcutRawUpdate, ShortcutUpdate
 from app.services.macos_text_replacement_importer import MacOSTextReplacementImportService
 from app.services.shortcut_service import ShortcutService
 from app.utils.errors import AppError
@@ -351,6 +351,48 @@ def test_rejecting_reserved_folder(service: ShortcutService) -> None:
         service.add_shortcut(ShortcutCreate(trigger=":pkg", replace="No", folder="packages"))
 
     assert exc.value.code == "INVALID_FOLDER"
+
+
+def test_exporting_folder_as_espanso_match_file(service: ShortcutService, espanso_root: Path) -> None:
+    write_match(espanso_root, "Team/a.yml", 'matches:\n  - trigger: ":one"\n    replace: "One"\n')
+    write_match(
+        espanso_root,
+        "Team/b.yml",
+        'matches:\n  - trigger: ":date"\n    replace: "{{today}}"\n    vars:\n      - name: today\n        type: date\n',
+    )
+    write_match(espanso_root, "Team/Nested/c.yml", 'matches:\n  - trigger: ":nested"\n    replace: "Nested"\n')
+
+    result = service.export_folder(FolderExport(folder="Team"))
+
+    assert result.folder == "Team"
+    assert result.filename == "espanso-team.yml"
+    assert result.shortcut_count == 2
+    assert result.content.startswith("matches:\n")
+    assert 'trigger: ":one"' in result.content
+    assert 'trigger: ":date"' in result.content
+    assert "vars:" in result.content
+    assert ":nested" not in result.content
+
+
+def test_exporting_folder_can_save_to_destination(service: ShortcutService, espanso_root: Path, tmp_path: Path) -> None:
+    write_match(espanso_root, "Team/a.yml", 'matches:\n  - trigger: ":one"\n    replace: "One"\n')
+    destination = tmp_path / "exports"
+    destination.mkdir()
+
+    result = service.export_folder(FolderExport(folder="Team", destination_folder=str(destination)))
+
+    saved = destination / "espanso-team.yml"
+    assert result.saved_path == str(saved)
+    assert saved.read_text(encoding="utf-8") == result.content
+
+
+def test_exporting_empty_folder_fails(service: ShortcutService) -> None:
+    service.create_folder("Empty")
+
+    with pytest.raises(AppError) as exc:
+        service.export_folder(FolderExport(folder="Empty"))
+
+    assert exc.value.code == "FOLDER_EMPTY"
 
 
 def test_editing_shortcut(service: ShortcutService, espanso_root: Path) -> None:

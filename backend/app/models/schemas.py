@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -128,8 +129,89 @@ class MacOSTextReplacementImportResult(ApiResult):
     reload: dict[str, Any] | None = None
 
 
+class GitShortcutSyncFile(BaseModel):
+    file_path: str
+    file_sha: str | None = None
+    shortcut_count: int = 0
+
+
+class GitShortcutSyncSource(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    enabled: bool = False
+    repo_url: str | None = None
+    branch: str | None = None
+    folder: str = "GitHub"
+    file_paths: list[str] = Field(default_factory=list)
+    last_file_shas: dict[str, str] = Field(default_factory=dict)
+    installed_files: dict[str, str] = Field(default_factory=dict)
+    last_synced_at: str | None = None
+    last_sync_message: str | None = None
+
+
+class GitShortcutSyncSettings(BaseModel):
+    enabled: bool = False
+    sources: list[GitShortcutSyncSource] = Field(default_factory=list)
+
+
+class AppSettings(BaseModel):
+    theme: Literal["dark", "light"] = "dark"
+    git_sync: GitShortcutSyncSettings = Field(default_factory=GitShortcutSyncSettings)
+
+
+class SettingsUpdate(BaseModel):
+    theme: Literal["dark", "light"] = "dark"
+    git_sync: GitShortcutSyncSettings
+
+
+class GitShortcutSyncValidation(ApiResult):
+    source_id: str | None = None
+    exists: bool = False
+    shortcut_file_found: bool = False
+    repo: str | None = None
+    branch: str | None = None
+    file_path: str | None = None
+    file_sha: str | None = None
+    files: list[GitShortcutSyncFile] = Field(default_factory=list)
+    shortcut_count: int = 0
+    message: str = ""
+
+
+class GitShortcutSyncSourceResult(BaseModel):
+    source_id: str
+    changed: bool = False
+    installed: bool = False
+    target_paths: list[str] = Field(default_factory=list)
+    validation: GitShortcutSyncValidation | None = None
+    message: str = ""
+
+
+class GitShortcutSyncResult(ApiResult):
+    changed: bool = False
+    installed: bool = False
+    target_path: str | None = None
+    target_paths: list[str] = Field(default_factory=list)
+    validation: GitShortcutSyncValidation | None = None
+    validations: list[GitShortcutSyncValidation] = Field(default_factory=list)
+    source_results: list[GitShortcutSyncSourceResult] = Field(default_factory=list)
+    settings: AppSettings | None = None
+    reload: dict[str, Any] | None = None
+
+
 class FolderCreate(BaseModel):
     folder: str
+
+
+class FolderExport(BaseModel):
+    folder: str | None = None
+    destination_folder: str | None = None
+
+
+class FolderExportResult(ApiResult):
+    folder: str
+    filename: str
+    content: str
+    shortcut_count: int
+    saved_path: str | None = None
 
 
 class PackageItem(BaseModel):

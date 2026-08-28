@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const http = require("http");
@@ -11,6 +11,12 @@ const MAC_APP_PATH = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin",
 let mainWindow = null;
 let backendProcess = null;
 let tray = null;
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
 
 function appRoot() {
   return app.getAppPath();
@@ -89,7 +95,8 @@ function createWindow() {
     title: "EspansoEdit",
     webPreferences: {
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      preload: path.join(__dirname, "preload.cjs")
     }
   });
 
@@ -161,24 +168,38 @@ function createMenu() {
   );
 }
 
-app.whenReady().then(async () => {
-  createMenu();
-  createTray();
-  try {
-    await waitForBackend(500);
-  } catch (error) {
-    startBackend();
+ipcMain.handle("export:select-directory", async () => {
+  const options = {
+    title: "Choose Export Folder",
+    properties: ["openDirectory", "createDirectory"]
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+if (gotSingleInstanceLock) {
+  app.on("second-instance", showWindow);
+
+  app.whenReady().then(async () => {
+    createMenu();
+    createTray();
     try {
-      await waitForBackend();
-    } catch (backendError) {
-      console.error(backendError);
+      await waitForBackend(500);
+    } catch (error) {
+      startBackend();
+      try {
+        await waitForBackend();
+      } catch (backendError) {
+        console.error(backendError);
+      }
     }
-  }
-  createWindow();
-});
+    createWindow();
+  });
 
-app.on("activate", showWindow);
+  app.on("activate", showWindow);
 
-app.on("before-quit", () => {
-  if (backendProcess) backendProcess.kill();
-});
+  app.on("before-quit", () => {
+    if (backendProcess) backendProcess.kill();
+  });
+}

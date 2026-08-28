@@ -2,7 +2,26 @@ import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-type View = "shortcuts" | "packages" | "config" | "health" | "backups";
+type View = "shortcuts" | "packages" | "settings" | "config" | "health" | "backups";
+type ThemeMode = "dark" | "light";
+type BrowserSaveResult = "saved" | "cancelled" | "unsupported";
+type BrowserDirectoryHandle = {
+  getFileHandle: (name: string, options: { create: boolean }) => Promise<{
+    createWritable: () => Promise<{
+      write: (data: Blob | string) => Promise<void>;
+      close: () => Promise<void>;
+    }>;
+  }>;
+};
+
+declare global {
+  interface Window {
+    espansoEdit?: {
+      selectExportDirectory?: () => Promise<string | null>;
+    };
+    showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<BrowserDirectoryHandle>;
+  }
+}
 
 type ApiError = {
   code: string;
@@ -63,6 +82,70 @@ type Backup = {
 type ConfigPayload = {
   status: Status;
   files: { path: string; file: string; content: string }[];
+};
+
+type FolderExportResult = {
+  success: boolean;
+  folder: string;
+  filename: string;
+  content: string;
+  shortcut_count: number;
+  saved_path: string | null;
+};
+
+type GitSyncFile = {
+  file_path: string;
+  file_sha: string | null;
+  shortcut_count: number;
+};
+
+type GitSyncSource = {
+  id: string;
+  enabled: boolean;
+  repo_url: string | null;
+  branch: string | null;
+  folder: string;
+  file_paths: string[];
+  last_file_shas: Record<string, string>;
+  installed_files: Record<string, string>;
+  last_synced_at: string | null;
+  last_sync_message: string | null;
+};
+
+type GitSyncSettings = {
+  enabled: boolean;
+  sources: GitSyncSource[];
+};
+
+type AppSettings = {
+  theme: ThemeMode;
+  git_sync: GitSyncSettings;
+};
+
+type GitSyncValidation = {
+  success: boolean;
+  source_id: string | null;
+  exists: boolean;
+  shortcut_file_found: boolean;
+  repo: string | null;
+  branch: string | null;
+  file_path: string | null;
+  file_sha: string | null;
+  files: GitSyncFile[];
+  shortcut_count: number;
+  message: string;
+};
+
+type GitSyncResult = {
+  success: boolean;
+  changed: boolean;
+  installed: boolean;
+  target_path: string | null;
+  target_paths: string[];
+  validation: GitSyncValidation | null;
+  validations: GitSyncValidation[];
+  settings: AppSettings | null;
+  reload: Record<string, unknown> | null;
 };
 
 type MutationResult = {
@@ -178,6 +261,7 @@ type ShortcutOptionPatch = {
 const nav: { id: View; label: string }[] = [
   { id: "shortcuts", label: "Shortcuts" },
   { id: "packages", label: "Packages" },
+  { id: "settings", label: "Settings" },
   { id: "config", label: "Config" },
   { id: "health", label: "Health" },
   { id: "backups", label: "Backups" }
@@ -210,6 +294,7 @@ function App() {
   const [backups, setBackups] = useState<Backup[]>([]);
   const [packages, setPackages] = useState<PackageItem[]>([]);
   const [config, setConfig] = useState<ConfigPayload | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [search, setSearch] = useState("");
   const [selectedFolder, setSelectedFolder] = useState("All");
   const [editing, setEditing] = useState<Shortcut | "new" | null>(null);
@@ -227,14 +312,16 @@ function App() {
     setLoading(true);
     setError(null);
     try {
-      const [nextStatus, nextShortcuts] = await Promise.all([
+      const [nextStatus, nextShortcuts, nextFolders, nextSettings] = await Promise.all([
         api<Status>("/api/status"),
-        api<Shortcut[]>("/api/shortcuts")
+        api<Shortcut[]>("/api/shortcuts"),
+        api<string[]>("/api/folders"),
+        api<AppSettings>("/api/settings")
       ]);
-      const nextFolders = await api<string[]>("/api/folders");
       setStatus(nextStatus);
       setShortcuts(nextShortcuts);
       setFolderNames(nextFolders);
+      setSettings(nextSettings);
       if (view === "backups") setBackups(await api<Backup[]>("/api/backups"));
       if (view === "packages") setPackages(await api<PackageItem[]>("/api/packages"));
       if (view === "config") setConfig(await api<ConfigPayload>("/api/config"));
@@ -250,6 +337,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    document.documentElement.dataset.theme = settings?.theme ?? "dark";
+  }, [settings?.theme]);
+
+  useEffect(() => {
     if (view === "backups") {
       api<Backup[]>("/api/backups").then(setBackups).catch((err) => setError(normalizeError(err)));
     }
@@ -258,6 +349,9 @@ function App() {
     }
     if (view === "packages") {
       api<PackageItem[]>("/api/packages").then(setPackages).catch((err) => setError(normalizeError(err)));
+    }
+    if (view === "settings") {
+      api<AppSettings>("/api/settings").then(setSettings).catch((err) => setError(normalizeError(err)));
     }
   }, [view]);
 
@@ -330,6 +424,37 @@ function App() {
       setSelectedFolder(result.folder);
       setCreatingFolder(false);
       await refresh();
+    } catch (err) {
+      setError(normalizeError(err));
+    }
+  };
+
+  const exportFolder = async (folder: string) => {
+    if (folder === "All") {
+      setError({ code: "FOLDER_REQUIRED", message: "Select a folder before exporting." });
+      return;
+    }
+    setNotice("");
+    setError(null);
+    try {
+      const destinationFolder = await window.espansoEdit?.selectExportDirectory?.();
+      if (window.espansoEdit?.selectExportDirectory && !destinationFolder) return;
+      const result = await api<FolderExportResult>("/api/folders/export", {
+        method: "POST",
+        body: JSON.stringify({ folder, destination_folder: destinationFolder })
+      });
+      if (result.saved_path) {
+        setNotice(`Saved ${result.shortcut_count} shortcut${result.shortcut_count === 1 ? "" : "s"} from ${result.folder} to ${result.saved_path}.`);
+      } else {
+        const browserSave = await saveTextFileWithBrowserPicker(result.filename, result.content, "application/x-yaml;charset=utf-8");
+        if (browserSave === "cancelled") return;
+        if (browserSave === "saved") {
+          setNotice(`Saved ${result.shortcut_count} shortcut${result.shortcut_count === 1 ? "" : "s"} from ${result.folder}.`);
+        } else {
+          downloadTextFile(result.filename, result.content, "application/x-yaml;charset=utf-8");
+          setNotice(`Exported ${result.shortcut_count} shortcut${result.shortcut_count === 1 ? "" : "s"} from ${result.folder}.`);
+        }
+      }
     } catch (err) {
       setError(normalizeError(err));
     }
@@ -459,6 +584,72 @@ function App() {
     }
   };
 
+  const saveSettings = async (nextSettings: AppSettings) => {
+    setNotice("");
+    setError(null);
+    try {
+      const updated = await api<AppSettings>("/api/settings", {
+        method: "PUT",
+        body: JSON.stringify(nextSettings)
+      });
+      setSettings(updated);
+      setNotice("Settings saved.");
+      await refresh();
+      return updated;
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
+  const validateGitSyncSettings = async (source: GitSyncSource) => {
+    setError(null);
+    try {
+      return await api<GitSyncValidation>("/api/settings/git-sync/validate", {
+        method: "POST",
+        body: JSON.stringify(source)
+      });
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
+  const syncGitShortcuts = async () => {
+    setNotice("");
+    setError(null);
+    try {
+      const result = await api<GitSyncResult>("/api/settings/git-sync/sync", { method: "POST" });
+      if (result.settings) setSettings(result.settings);
+      const action = result.installed ? `installed ${result.target_paths.length} file${result.target_paths.length === 1 ? "" : "s"}` : "already up to date";
+      setNotice(`GitHub shortcuts ${action}.${result.reload ? ` ${reloadMessage(result.reload)}` : ""}`);
+      await refresh();
+      return result;
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    api<GitSyncResult>("/api/settings/git-sync/sync", { method: "POST" })
+      .then(async (result) => {
+        if (!active) return;
+        if (result.settings) setSettings(result.settings);
+        if (result.installed) {
+          setNotice(`GitHub shortcuts installed ${result.target_paths.length} file${result.target_paths.length === 1 ? "" : "s"}. ${result.reload ? reloadMessage(result.reload) : ""}`);
+          await refresh();
+        }
+      })
+      .catch((err) => {
+        if (active) setError(normalizeError(err));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
     <div className={`shell ${sidebarCollapsed ? "sidebarCollapsed" : ""}`}>
       <aside className="sidebar">
@@ -507,6 +698,8 @@ function App() {
             onAdd={() => setEditing("new")}
             onImportMacOS={() => setImportingMacOS(true)}
             onCreateFolder={() => setCreatingFolder(true)}
+            selectedFolder={selectedFolder}
+            onExportFolder={exportFolder}
             onEdit={setEditing}
             onMove={setMoving}
             onDelete={deleteShortcut}
@@ -516,6 +709,15 @@ function App() {
         {view === "health" && <HealthView status={status} onValidate={runValidation} />}
         {view === "backups" && <BackupsView backups={backups} onRestore={restore} />}
         {view === "packages" && <PackagesView packages={packages} onInstall={installPackage} onUpdate={updatePackage} onRemove={removePackage} />}
+        {view === "settings" && (
+          <SettingsView
+            settings={settings}
+            folders={folders}
+            onSave={saveSettings}
+            onValidateGitSync={validateGitSyncSettings}
+            onSyncGit={syncGitShortcuts}
+          />
+        )}
         {view === "config" && <ConfigView config={config} />}
       </main>
       {editing && (
@@ -561,6 +763,8 @@ function ShortcutsView(props: {
   onAdd: () => void;
   onImportMacOS: () => void;
   onCreateFolder: () => void;
+  selectedFolder: string;
+  onExportFolder: (folder: string) => void;
   onEdit: (shortcut: Shortcut) => void;
   onMove: (shortcut: Shortcut) => void;
   onDelete: (shortcut: Shortcut) => void;
@@ -633,9 +837,10 @@ function ShortcutsView(props: {
       <div className="toolbar">
         <h1>Shortcuts</h1>
         <div className="toolbarActions">
-          <button onClick={props.onImportMacOS}>Import from macOS</button>
-          <button onClick={props.onCreateFolder}>New Folder</button>
-          <button className="primary" onClick={props.onAdd}>Add Shortcut</button>
+          <IconButton label="Import from macOS" disabled={false} onClick={props.onImportMacOS} icon={<ImportIcon />} />
+          <IconButton label="New Folder" disabled={false} onClick={props.onCreateFolder} icon={<FolderPlusIcon />} />
+          <IconButton label="Export Folder" disabled={props.selectedFolder === "All"} onClick={() => props.onExportFolder(props.selectedFolder)} icon={<ExportIcon />} />
+          <IconButton label="Add Shortcut" className="primary" disabled={false} onClick={props.onAdd} icon={<PlusIcon />} />
         </div>
       </div>
       <input
@@ -732,11 +937,51 @@ function SortableHeader(props: {
   );
 }
 
-function IconButton(props: { label: string; disabled: boolean; icon: React.ReactNode; onClick: () => void }) {
+function IconButton(props: { label: string; className?: string; disabled: boolean; icon: React.ReactNode; onClick: () => void }) {
+  const className = ["iconButton", props.className].filter(Boolean).join(" ");
   return (
-    <button className="iconButton" type="button" aria-label={props.label} title={props.label} disabled={props.disabled} onClick={props.onClick}>
+    <button className={className} type="button" aria-label={props.label} title={props.label} disabled={props.disabled} onClick={props.onClick}>
       {props.icon}
     </button>
+  );
+}
+
+function ImportIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M4 17v3h16v-3" />
+    </svg>
+  );
+}
+
+function FolderPlusIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 6h7l2 3h9v10H3V6Z" />
+      <path d="M12 14h6" />
+      <path d="M15 11v6" />
+    </svg>
+  );
+}
+
+function ExportIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 15V3" />
+      <path d="m7 8 5-5 5 5" />
+      <path d="M5 14v6h14v-6" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
   );
 }
 
@@ -1548,6 +1793,226 @@ function PackageInstallPanel({ onInstall }: { onInstall: (values: PackageInstall
   );
 }
 
+function SettingsView(props: {
+  settings: AppSettings | null;
+  folders: FolderItem[];
+  onSave: (settings: AppSettings) => Promise<AppSettings>;
+  onValidateGitSync: (source: GitSyncSource) => Promise<GitSyncValidation>;
+  onSyncGit: () => Promise<GitSyncResult>;
+}) {
+  const [gitSync, setGitSync] = useState<GitSyncSettings>(() => props.settings?.git_sync ?? defaultGitSyncSettings());
+  const [theme, setTheme] = useState<ThemeMode>(() => props.settings?.theme ?? "dark");
+  const [validations, setValidations] = useState<Record<string, GitSyncValidation>>({});
+  const [saving, setSaving] = useState(false);
+  const [validatingId, setValidatingId] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [localError, setLocalError] = useState("");
+
+  useEffect(() => {
+    if (props.settings) {
+      setGitSync(props.settings.git_sync);
+      setTheme(props.settings.theme);
+    }
+  }, [props.settings]);
+
+  const updateSettings = (patch: Partial<GitSyncSettings>) => {
+    setGitSync((current) => ({ ...current, ...patch }));
+  };
+
+  const updateSource = (sourceId: string, patch: Partial<GitSyncSource>) => {
+    setGitSync((current) => ({
+      ...current,
+      sources: current.sources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source))
+    }));
+    setValidations((current) => {
+      const next = { ...current };
+      delete next[sourceId];
+      return next;
+    });
+  };
+
+  const addSource = () => {
+    setGitSync((current) => ({
+      ...current,
+      sources: [...current.sources, defaultGitSyncSource()]
+    }));
+  };
+
+  const removeSource = (sourceId: string) => {
+    setGitSync((current) => ({
+      ...current,
+      sources: current.sources.filter((source) => source.id !== sourceId)
+    }));
+  };
+
+  const normalized = normalizeGitSyncSettings(gitSync);
+
+  const validate = async (source: GitSyncSource) => {
+    const normalizedSource = normalizeGitSyncSource(source);
+    if (!normalizedSource.repo_url) {
+      setLocalError("Enter a GitHub repository URL.");
+      return null;
+    }
+    setValidatingId(source.id);
+    setLocalError("");
+    try {
+      const result = await props.onValidateGitSync(normalizedSource);
+      setValidations((current) => ({ ...current, [source.id]: result }));
+      return result;
+    } catch (err) {
+      setLocalError(normalizeError(err).message);
+      return null;
+    } finally {
+      setValidatingId(null);
+    }
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const hasInvalidEnabledSource = normalized.sources.some((source) => source.enabled && !source.repo_url);
+    if (normalized.enabled && hasInvalidEnabledSource) {
+      setLocalError("Enabled sources need a GitHub repository URL.");
+      return;
+    }
+    setSaving(true);
+    setLocalError("");
+    try {
+      const saved = await props.onSave({ theme, git_sync: normalized });
+      setGitSync(saved.git_sync);
+      setTheme(saved.theme);
+    } catch (err) {
+      setLocalError(normalizeError(err).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const syncNow = async () => {
+    setSyncing(true);
+    setLocalError("");
+    try {
+      const result = await props.onSyncGit();
+      if (result.settings) setGitSync(result.settings.git_sync);
+      if (result.validations.length > 0) {
+        setValidations(Object.fromEntries(result.validations.map((validation) => [validation.source_id ?? "", validation])));
+      }
+    } catch (err) {
+      setLocalError(normalizeError(err).message);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <section>
+      <div className="toolbar">
+        <h1>Settings</h1>
+      </div>
+      <form className="panel settingsPanel" onSubmit={submit}>
+        <div className="formBuilderHeader">
+          <LabelWithInfo text="GitHub shortcut sync" info="When enabled, EspansoEdit checks each configured GitHub repository at launch and installs every selected Espanso match file into that source's destination folder." />
+          <div className="toolbarActions">
+            <button type="button" onClick={addSource}>Add repo</button>
+            <button type="button" disabled={syncing || !props.settings?.git_sync.enabled} onClick={syncNow}>
+              {syncing ? "Syncing..." : "Sync now"}
+            </button>
+            <button className="primary" disabled={saving} type="submit">
+              {saving ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </div>
+        {localError && <div className="formError">{localError}</div>}
+        <div className="optionGrid">
+          <label className="checkRow">
+            <input type="checkbox" checked={theme === "dark"} onChange={(event) => setTheme(event.target.checked ? "dark" : "light")} />
+            <span>Dark mode</span>
+            <InfoButton text="Switches EspansoEdit between the dark VirtualBuddy-style theme and a lighter macOS-style theme." />
+          </label>
+          <label className="checkRow">
+            <input type="checkbox" checked={gitSync.enabled} onChange={(event) => updateSettings({ enabled: event.target.checked })} />
+            <span>Sync on app launch</span>
+            <InfoButton text="Runs all enabled GitHub sync sources when the desktop app starts. Manual Sync now remains available from this Settings page." />
+          </label>
+        </div>
+        <div className="syncSourceList">
+          {gitSync.sources.map((source, index) => {
+            const validation = validations[source.id];
+            const filePathsText = source.file_paths.join("\n");
+            return (
+              <div className="syncSourceCard" key={source.id}>
+                <div className="formBuilderHeader">
+                  <h2>Repository {index + 1}</h2>
+                  <div className="toolbarActions">
+                    <button type="button" disabled={validatingId === source.id || !source.repo_url} onClick={() => validate(source)}>
+                      {validatingId === source.id ? "Validating..." : "Validate"}
+                    </button>
+                    <button type="button" onClick={() => removeSource(source.id)}>Remove</button>
+                  </div>
+                </div>
+                <div className="settingsGrid">
+                  <label>
+                    Repository URL
+                    <input
+                      value={source.repo_url ?? ""}
+                      onChange={(event) => updateSource(source.id, { repo_url: event.target.value })}
+                      placeholder="https://github.com/user/espanso-shortcuts"
+                    />
+                  </label>
+                  <label>
+                    Branch
+                    <input
+                      value={source.branch ?? ""}
+                      onChange={(event) => updateSource(source.id, { branch: event.target.value })}
+                      placeholder="Default branch"
+                    />
+                  </label>
+                  <label>
+                    Destination folder
+                    <FolderInput value={source.folder || "GitHub"} folders={props.folders} onChange={(folder) => updateSource(source.id, { folder })} />
+                  </label>
+                  <label>
+                    Match file paths
+                    <textarea
+                      className="codeInput compactCodeInput"
+                      value={filePathsText}
+                      onChange={(event) => updateSource(source.id, { file_paths: linesToFilePaths(event.target.value) })}
+                      placeholder={"Auto-detect all Espanso YAML files\nor enter one path per line"}
+                      rows={5}
+                    />
+                  </label>
+                </div>
+                <div className="optionGrid">
+                  <label className="checkRow">
+                    <input type="checkbox" checked={source.enabled} onChange={(event) => updateSource(source.id, { enabled: event.target.checked })} />
+                    <span>Enabled</span>
+                    <InfoButton text="Includes this repository when GitHub shortcut sync runs." />
+                  </label>
+                </div>
+                {validation && (
+                  <div className="syncStatus">
+                    <StatusPill ok={validation.shortcut_file_found} label={validation.shortcut_file_found ? "Valid" : "Check"} />
+                    <span>{validation.message}</span>
+                    {validation.files.map((file) => (
+                      <strong key={file.file_path}>{file.file_path}</strong>
+                    ))}
+                  </div>
+                )}
+                <div className="settingsMeta">
+                  <span>Last sync: {source.last_synced_at ?? "Never"}</span>
+                  <span>{source.last_sync_message ?? "No sync result yet."}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {gitSync.sources.length === 0 && (
+          <div className="empty compactEmpty">No GitHub repositories configured.</div>
+        )}
+      </form>
+    </section>
+  );
+}
+
 function BackupsView({ backups, onRestore }: { backups: Backup[]; onRestore: (backup: Backup) => void }) {
   return (
     <section>
@@ -1616,6 +2081,33 @@ function reloadMessage(reload: Record<string, unknown> | null) {
   const command = reload?.command;
   if (Array.isArray(command) && command.length === 0) return "Espanso will pick it up from its config watcher.";
   return "Espanso reload completed.";
+}
+
+function downloadTextFile(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function saveTextFileWithBrowserPicker(filename: string, content: string, type: string): Promise<BrowserSaveResult> {
+  if (!window.showDirectoryPicker) return "unsupported";
+  try {
+    const directory = await window.showDirectoryPicker({ mode: "readwrite" });
+    const file = await directory.getFileHandle(filename, { create: true });
+    const writable = await file.createWritable();
+    await writable.write(new Blob([content], { type }));
+    await writable.close();
+    return "saved";
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return "cancelled";
+    throw err;
+  }
 }
 
 function handleCodeTextareaKeyDown(
@@ -1763,6 +2255,49 @@ function macOSImportSourceLabel(preview: MacOSTextReplacementPreview) {
 
 function isImportableMacOSReplacement(item: MacOSTextReplacementItem) {
   return item.enabled && Boolean(item.trigger.trim()) && item.replacement !== "";
+}
+
+function defaultGitSyncSettings(): GitSyncSettings {
+  return {
+    enabled: false,
+    sources: [defaultGitSyncSource()]
+  };
+}
+
+function defaultGitSyncSource(): GitSyncSource {
+  return {
+    id: `source-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    enabled: true,
+    repo_url: "",
+    branch: "",
+    folder: "GitHub",
+    file_paths: [],
+    last_file_shas: {},
+    installed_files: {},
+    last_synced_at: null,
+    last_sync_message: null
+  };
+}
+
+function normalizeGitSyncSettings(settings: GitSyncSettings): GitSyncSettings {
+  return {
+    enabled: settings.enabled,
+    sources: settings.sources.map(normalizeGitSyncSource)
+  };
+}
+
+function normalizeGitSyncSource(source: GitSyncSource): GitSyncSource {
+  return {
+    ...source,
+    repo_url: source.repo_url?.trim() || null,
+    branch: source.branch?.trim() || null,
+    folder: source.folder?.trim() || "GitHub",
+    file_paths: source.file_paths.map((path) => path.trim()).filter(Boolean)
+  };
+}
+
+function linesToFilePaths(text: string) {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
 function createFormField(name = ""): FormFieldDraft {
