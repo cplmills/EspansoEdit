@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import plistlib
 from pathlib import Path
 
 import pytest
 
-from app.models.schemas import ShortcutCreate, ShortcutMove, ShortcutRawUpdate, ShortcutUpdate
+from app.models.schemas import MacOSTextReplacementImport, ShortcutCreate, ShortcutMove, ShortcutRawCreate, ShortcutRawUpdate, ShortcutUpdate
+from app.services.macos_text_replacement_importer import MacOSTextReplacementImportService
 from app.services.shortcut_service import ShortcutService
 from app.utils.errors import AppError
 from conftest import FakeDiscovery, FakeReloader
@@ -15,6 +17,11 @@ def write_match(root: Path, name: str, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def write_macos_replacements(path: Path, items: list[dict], key: str = "NSUserDictionaryReplacementItems") -> None:
+    with path.open("wb") as handle:
+        plistlib.dump({key: items}, handle)
 
 
 def test_loading_simple_match_file(service: ShortcutService, espanso_root: Path) -> None:
@@ -43,6 +50,20 @@ def test_loading_multiline_replacements(service: ShortcutService, espanso_root: 
     shortcut = service.list_shortcuts()[0]
 
     assert shortcut.replace == "Line one\nLine two\n"
+
+
+def test_adding_cr_multiline_replacement_writes_literal_block(service: ShortcutService, espanso_root: Path) -> None:
+    replacement = "Option Explicit\r\rFunction CleanAddress(ByVal txt As String) As String\r    Dim s As String\rEnd Function"
+
+    service.add_shortcut(ShortcutCreate(trigger=":vba", replace=replacement, folder="Scripting"))
+
+    content = (espanso_root / "match" / "Scripting" / "espanso-shortcut-manager.yml").read_text(encoding="utf-8")
+    shortcut = service.list_shortcuts()[0]
+    assert shortcut.replace == replacement.replace("\r", "\n")
+    assert "replace: |" in content
+    assert "\r" not in content
+    assert "Option Explicit" in content
+    assert "Function CleanAddress" in content
 
 
 def test_adding_shortcut_creates_managed_file_and_backup(service: ShortcutService, espanso_root: Path) -> None:
@@ -83,6 +104,21 @@ def test_adding_shortcut_with_force_mode(service: ShortcutService, espanso_root:
     assert "force_mode: clipboard" in content
 
 
+def test_adding_case_insensitive_shortcut(service: ShortcutService, espanso_root: Path) -> None:
+    shortcut, _ = service.add_shortcut(
+        ShortcutCreate(trigger=".nfsabn", replace="ABN details", case_insensitive=True)
+    )
+
+    content = (espanso_root / "match" / "espanso-shortcut-manager.yml").read_text(encoding="utf-8")
+    listed = service.list_shortcuts()[0]
+    assert shortcut.case_insensitive is True
+    assert listed.trigger == ".nfsabn"
+    assert listed.case_insensitive is True
+    assert listed.editable is True
+    assert "regex: (?i)\\.nfsabn" in content
+    assert "trigger:" not in content
+
+
 def test_adding_form_shortcut(service: ShortcutService, espanso_root: Path) -> None:
     shortcut, _ = service.add_shortcut(
         ShortcutCreate(trigger=":reply", form="Hi [[name]],\n\n[[message]]", label="Reply form")
@@ -109,6 +145,67 @@ def test_adding_form_shortcut_with_fields(service: ShortcutService, espanso_root
     assert shortcut.form_fields["plan"]["type"] == "choice"
     assert "form_fields:" in content
     assert "type: choice" in content
+
+
+def test_adding_raw_yaml_shortcut(service: ShortcutService, espanso_root: Path) -> None:
+    shortcut, _ = service.add_shortcut_raw(
+        ShortcutRawCreate(
+            yaml='trigger: ":raw"\nreplace: "Raw replacement"\nword: true\n',
+            folder="raw",
+        )
+    )
+
+    path = espanso_root / "match" / "raw" / "espanso-shortcut-manager.yml"
+    content = path.read_text(encoding="utf-8")
+    assert shortcut.trigger == ":raw"
+    assert shortcut.supported is True
+    assert "word: true" in content
+    assert "Raw replacement" in content
+
+
+def test_adding_advanced_raw_yaml_shortcut(service: ShortcutService, espanso_root: Path) -> None:
+    shortcut, _ = service.add_shortcut_raw(
+        ShortcutRawCreate(
+            yaml='trigger: ":today"\nreplace: "{{today}}"\nvars:\n  - name: today\n    type: date\n',
+        )
+    )
+
+    content = (espanso_root / "match" / "espanso-shortcut-manager.yml").read_text(encoding="utf-8")
+    assert shortcut.trigger == ":today"
+    assert shortcut.supported is False
+    assert "type: date" in content
+
+
+def test_adding_raw_yaml_shortcut_from_single_item_list(service: ShortcutService, espanso_root: Path) -> None:
+    shortcut, _ = service.add_shortcut_raw(
+        ShortcutRawCreate(
+            yaml='- trigger: ":file"\n  replace: "{{form1.file}}"\n  vars:\n    - name: files\n      type: shell\n      params:\n        cmd: "find ~/Documents -maxdepth 1"\n',
+        )
+    )
+
+    content = (espanso_root / "match" / "espanso-shortcut-manager.yml").read_text(encoding="utf-8")
+    assert shortcut.trigger == ":file"
+    assert shortcut.supported is False
+    assert "- trigger: \":file\"" in content
+    assert 'cmd: "find ~/Documents -maxdepth 1"' in content
+
+
+def test_rejecting_multiple_raw_yaml_shortcuts(service: ShortcutService) -> None:
+    with pytest.raises(AppError) as exc:
+        service.add_shortcut_raw(
+            ShortcutRawCreate(
+                yaml='- trigger: ":one"\n  replace: "One"\n- trigger: ":two"\n  replace: "Two"\n',
+            )
+        )
+
+    assert exc.value.code == "INVALID_MATCH_ENTRY"
+
+
+def test_rejecting_full_match_file_as_raw_shortcut(service: ShortcutService) -> None:
+    with pytest.raises(AppError) as exc:
+        service.add_shortcut_raw(ShortcutRawCreate(yaml='matches:\n  - trigger: ":bad"\n    replace: "Bad"\n'))
+
+    assert exc.value.code == "INVALID_MATCH_ENTRY"
 
 
 def test_adding_shortcut_to_folder(service: ShortcutService, espanso_root: Path) -> None:
@@ -138,6 +235,115 @@ def test_creating_folder(service: ShortcutService, espanso_root: Path) -> None:
     assert folder == "work/email"
     assert (espanso_root / "match" / "work" / "email").is_dir()
     assert "work/email" in service.list_folders()
+
+
+def test_previewing_macos_text_replacements(espanso_root: Path, tmp_path: Path) -> None:
+    preferences = tmp_path / ".GlobalPreferences.plist"
+    write_macos_replacements(
+        preferences,
+        [
+            {"replace": "omw", "with": "On my way!", "on": 1},
+            {"replace": "addr", "with": "123 Example Street", "on": 0},
+            {"replace": "broken"},
+        ],
+    )
+    service = ShortcutService(
+        FakeDiscovery(espanso_root),
+        FakeReloader(),
+        MacOSTextReplacementImportService(preferences),
+    )
+
+    preview = service.preview_macos_text_replacements()
+
+    assert preview.available is True
+    assert preview.source_key == "NSUserDictionaryReplacementItems"
+    assert preview.items[0].trigger == "omw"
+    assert preview.items[0].replacement == "On my way!"
+    assert preview.items[1].enabled is False
+    assert preview.unsupported_count == 1
+
+
+def test_previewing_legacy_macos_text_replacements_key(espanso_root: Path, tmp_path: Path) -> None:
+    preferences = tmp_path / ".GlobalPreferences.plist"
+    write_macos_replacements(
+        preferences,
+        [{"replace": "brb", "with": "Be right back", "on": 1}],
+        key="NSUserReplacementItems",
+    )
+    service = ShortcutService(
+        FakeDiscovery(espanso_root),
+        FakeReloader(),
+        MacOSTextReplacementImportService(preferences),
+    )
+
+    preview = service.preview_macos_text_replacements()
+
+    assert preview.available is True
+    assert preview.source_key == "NSUserReplacementItems"
+    assert preview.items[0].trigger == "brb"
+
+
+def test_importing_macos_text_replacements_skips_duplicates_and_disabled(espanso_root: Path, tmp_path: Path) -> None:
+    write_match(espanso_root, "base.yml", 'matches:\n  - trigger: "omw"\n    replace: "Already here"\n')
+    preferences = tmp_path / ".GlobalPreferences.plist"
+    write_macos_replacements(
+        preferences,
+        [
+            {"replace": "omw", "with": "On my way!", "on": 1},
+            {"replace": "sig", "with": "Chris Mills", "on": 1},
+            {"replace": "off", "with": "Disabled", "on": 0},
+            {"replace": "sig", "with": "Duplicate import", "on": 1},
+        ],
+    )
+    service = ShortcutService(
+        FakeDiscovery(espanso_root),
+        FakeReloader(),
+        MacOSTextReplacementImportService(preferences),
+    )
+
+    result = service.import_macos_text_replacements(MacOSTextReplacementImport(folder="imported/macos"))
+
+    target = espanso_root / "match" / "imported" / "macos" / "espanso-shortcut-manager.yml"
+    content = target.read_text(encoding="utf-8")
+    assert result.imported_count == 1
+    assert result.skipped_count == 3
+    assert result.imported[0].trigger == "sig"
+    assert result.imported[0].folder == "imported/macos"
+    assert "replace: Chris Mills" in content
+    assert "Duplicate import" not in content
+    assert {item.reason for item in result.skipped} == {"duplicate_existing", "disabled", "duplicate_import"}
+
+
+def test_importing_selected_macos_text_replacements_only(espanso_root: Path, tmp_path: Path) -> None:
+    preferences = tmp_path / ".GlobalPreferences.plist"
+    write_macos_replacements(
+        preferences,
+        [
+            {"replace": "sig", "with": "Chris Mills", "on": 1},
+            {"replace": "addr", "with": "123 Example Street", "on": 1},
+            {"replace": "off", "with": "Disabled", "on": 0},
+        ],
+    )
+    service = ShortcutService(
+        FakeDiscovery(espanso_root),
+        FakeReloader(),
+        MacOSTextReplacementImportService(preferences),
+    )
+
+    result = service.import_macos_text_replacements(
+        MacOSTextReplacementImport(
+            folder="selected",
+            replacements=[service.preview_macos_text_replacements().items[1]],
+        )
+    )
+
+    target = espanso_root / "match" / "selected" / "espanso-shortcut-manager.yml"
+    content = target.read_text(encoding="utf-8")
+    assert result.imported_count == 1
+    assert result.imported[0].trigger == "addr"
+    assert "123 Example Street" in content
+    assert "Chris Mills" not in content
+    assert [item.reason for item in result.skipped] == ["ignored", "ignored"]
 
 
 def test_rejecting_reserved_folder(service: ShortcutService) -> None:
@@ -172,6 +378,22 @@ def test_editing_shortcut_options(service: ShortcutService, espanso_root: Path) 
     assert "label: New label" in content
     assert "word:" not in content
     assert "propagate_case: true" in content
+
+
+def test_editing_case_insensitive_shortcut_back_to_trigger(service: ShortcutService, espanso_root: Path) -> None:
+    created, _ = service.add_shortcut(
+        ShortcutCreate(trigger=".nfsabn", replace="ABN details", case_insensitive=True)
+    )
+
+    updated, _ = service.update_shortcut(
+        created.id,
+        ShortcutUpdate(trigger=".nfsabn", replace="ABN details", case_insensitive=False),
+    )
+
+    content = (espanso_root / "match" / "espanso-shortcut-manager.yml").read_text(encoding="utf-8")
+    assert updated.case_insensitive is False
+    assert "trigger: .nfsabn" in content
+    assert "regex:" not in content
 
 
 def test_raw_editing_advanced_shortcut(service: ShortcutService, espanso_root: Path) -> None:

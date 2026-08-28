@@ -1,0 +1,65 @@
+{
+  "name": "espansoedit",
+  "version": "0.1.3",
+  "private": true,
+  "description": "Mac desktop shell for Espanso shortcut management.",
+  "author": "Chris Mills",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "frontend:build": "npm --prefix frontend run build",
+    "desktop:icons": "node desktop/create-icons.cjs",
+    "desktop:dev": "npm run frontend:build && npm run desktop:icons && electron .",
+    "desktop:pack": "npm run frontend:build && npm run desktop:icons && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir",
+    "desktop:dmg": "npm run frontend:build && npm run desktop:icons && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "electron": "^37.3.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.chrismills.espansoedit",
+    "productName": "EspansoEdit",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "frontend/dist/**/*",
+      "backend/app/**/*",
+      "backend/requirements.txt"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "app/**",
+          "requirements.txt",
+          ".venv/**"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "desktop/assets/icon.icns",
+      "target": [
+        "dir"
+      ]
+    },
+    "dmg": {
+      "icon": "desktop/assets/icon.icns",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  }
+}

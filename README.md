@@ -22,7 +22,7 @@ frontend/
 
 - macOS
 - Python 3.10+
-- Node.js 18+
+- Node.js 20.19+ or 22.12+ for the current Vite toolchain
 - Espanso installed for full local use
 
 The backend uses the Espanso CLI where possible, then falls back to known macOS Espanso configuration locations.
@@ -46,6 +46,48 @@ npm run dev
 ```
 
 Vite proxies `/api` requests to `http://127.0.0.1:8765`.
+
+## Mac Desktop App
+
+The project also includes an Electron shell that packages the existing React UI with the FastAPI backend.
+
+Install the desktop tooling once from the repo root:
+
+```bash
+npm install
+```
+
+Run the app from source:
+
+```bash
+npm run desktop:dev
+```
+
+Build a local unsigned macOS `.app` bundle:
+
+```bash
+npm run desktop:pack
+```
+
+Build a local unsigned DMG:
+
+```bash
+npm run desktop:dmg
+```
+
+The generated app is written to:
+
+```text
+release/mac-arm64/EspansoEdit.app
+```
+
+The generated DMG is written to:
+
+```text
+release/EspansoEdit-0.1.3-arm64.dmg
+```
+
+The desktop app starts the backend on `127.0.0.1:8765`, loads the built frontend, and adds a macOS menu bar/tray item with quick actions for opening the app and the Espanso match folder. Local development builds are unsigned; use a Developer ID certificate and notarization before distributing outside this Mac.
 
 ## Espanso Configuration Handling
 

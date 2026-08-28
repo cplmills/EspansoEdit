@@ -20,7 +20,7 @@ class EspansoPaths:
 
 class EspansoDiscoveryService:
     def discover(self) -> EspansoPaths:
-        executable = which("espanso")
+        executable = self._executable()
         version = self._version(executable) if executable else None
         config_path = self._config_path(executable)
         if config_path is None:
@@ -39,6 +39,23 @@ class EspansoDiscoveryService:
             config_dir=config_dir,
             executable=executable,
         )
+
+    def _executable(self) -> str | None:
+        configured = os.environ.get("ESPANSO_EXECUTABLE")
+        candidates = [
+            configured,
+            which("espanso"),
+            "/usr/local/bin/espanso",
+            "/opt/homebrew/bin/espanso",
+            "/Applications/Espanso.app/Contents/MacOS/espanso",
+        ]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            path = Path(candidate).expanduser()
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path)
+        return None
 
     def _version(self, executable: str) -> str | None:
         result = self._run([executable, "--version"])
@@ -80,4 +97,3 @@ class EspansoDiscoveryService:
             return subprocess.run(args, capture_output=True, text=True, timeout=5, check=False)
         except (OSError, subprocess.SubprocessError):
             return None
-

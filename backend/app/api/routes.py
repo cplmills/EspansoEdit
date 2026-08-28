@@ -4,7 +4,25 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends
 
-from app.models.schemas import BackupItem, EspansoStatus, FolderCreate, MutationResult, PackageActionResult, PackageInstall, PackageItem, Shortcut, ShortcutCreate, ShortcutMove, ShortcutRawUpdate, ShortcutUpdate, ValidationResult
+from app.models.schemas import (
+    BackupItem,
+    EspansoStatus,
+    FolderCreate,
+    MacOSTextReplacementImport,
+    MacOSTextReplacementImportResult,
+    MacOSTextReplacementPreview,
+    MutationResult,
+    PackageActionResult,
+    PackageInstall,
+    PackageItem,
+    Shortcut,
+    ShortcutCreate,
+    ShortcutMove,
+    ShortcutRawCreate,
+    ShortcutRawUpdate,
+    ShortcutUpdate,
+    ValidationResult,
+)
 from app.services.package_service import EspansoPackageService
 from app.services.shortcut_service import ShortcutService
 from app.utils.errors import AppError, http_error
@@ -48,6 +66,25 @@ def folders(service: ShortcutService = Depends(get_service)) -> list[str]:
 def create_folder(payload: FolderCreate, service: ShortcutService = Depends(get_service)) -> dict[str, str]:
     try:
         return {"folder": service.create_folder(payload.folder)}
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.get("/import/macos-text-replacements", response_model=MacOSTextReplacementPreview)
+def preview_macos_text_replacements(service: ShortcutService = Depends(get_service)) -> MacOSTextReplacementPreview:
+    try:
+        return service.preview_macos_text_replacements()
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/import/macos-text-replacements", response_model=MacOSTextReplacementImportResult)
+def import_macos_text_replacements(
+    payload: MacOSTextReplacementImport,
+    service: ShortcutService = Depends(get_service),
+) -> MacOSTextReplacementImportResult:
+    try:
+        return service.import_macos_text_replacements(payload)
     except AppError as exc:
         raise http_error(exc) from exc
 
@@ -96,6 +133,15 @@ def shortcut(shortcut_id: str, service: ShortcutService = Depends(get_service)) 
 def create_shortcut(payload: ShortcutCreate, service: ShortcutService = Depends(get_service)) -> MutationResult:
     try:
         shortcut, reload_result = service.add_shortcut(payload)
+        return MutationResult(shortcut=shortcut, reload=reload_result.to_dict())
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/shortcuts/raw", response_model=MutationResult)
+def create_shortcut_raw(payload: ShortcutRawCreate, service: ShortcutService = Depends(get_service)) -> MutationResult:
+    try:
+        shortcut, reload_result = service.add_shortcut_raw(payload)
         return MutationResult(shortcut=shortcut, reload=reload_result.to_dict())
     except AppError as exc:
         raise http_error(exc) from exc

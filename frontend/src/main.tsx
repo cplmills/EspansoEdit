@@ -20,6 +20,7 @@ type Shortcut = {
   label: string | null;
   word: boolean | null;
   propagate_case: boolean | null;
+  case_insensitive: boolean | null;
   uppercase_style: string | null;
   force_mode: string | null;
   folder: string;
@@ -71,7 +72,7 @@ type MutationResult = {
 };
 
 type ShortcutFormValues = {
-  matchType: "replace" | "form";
+  matchType: "replace" | "form" | "yaml";
   trigger: string;
   replace: string;
   form: string;
@@ -79,6 +80,7 @@ type ShortcutFormValues = {
   label: string;
   word: boolean;
   propagate_case: boolean;
+  case_insensitive: boolean;
   uppercase_style: string;
   force_mode: string;
   folder: string;
@@ -89,6 +91,39 @@ type ShortcutFormValues = {
 type FolderItem = {
   name: string;
   count: number;
+};
+
+type MacOSTextReplacementItem = {
+  trigger: string;
+  replacement: string;
+  enabled: boolean;
+};
+
+type MacOSTextReplacementPreview = {
+  success: boolean;
+  available: boolean;
+  macos_version: string | null;
+  source_path: string | null;
+  source_key: string | null;
+  items: MacOSTextReplacementItem[];
+  unsupported_count: number;
+};
+
+type MacOSTextReplacementSkip = {
+  trigger: string | null;
+  replacement: string | null;
+  reason: string;
+};
+
+type MacOSTextReplacementImportResult = {
+  success: boolean;
+  source_path: string | null;
+  total_found: number;
+  imported_count: number;
+  skipped_count: number;
+  imported: Shortcut[];
+  skipped: MacOSTextReplacementSkip[];
+  reload: Record<string, unknown> | null;
 };
 
 type PackageItem = {
@@ -132,6 +167,14 @@ type FormFieldDraft = {
   values: string;
 };
 
+type ShortcutSortKey = "trigger" | "replacement" | "source" | "status";
+type SortDirection = "asc" | "desc";
+type ShortcutOptionPatch = {
+  word?: boolean;
+  propagate_case?: boolean;
+  case_insensitive?: boolean;
+};
+
 const nav: { id: View; label: string }[] = [
   { id: "shortcuts", label: "Shortcuts" },
   { id: "packages", label: "Packages" },
@@ -141,7 +184,8 @@ const nav: { id: View; label: string }[] = [
 ];
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const apiBase = window.location.protocol === "file:" ? "http://127.0.0.1:8765" : "";
+  const response = await fetch(`${apiBase}${path}`, {
     headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) },
     ...options
   });
@@ -171,6 +215,7 @@ function App() {
   const [editing, setEditing] = useState<Shortcut | "new" | null>(null);
   const [moving, setMoving] = useState<Shortcut | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [importingMacOS, setImportingMacOS] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [navigationCollapsed, setNavigationCollapsed] = useState(false);
   const [foldersCollapsed, setFoldersCollapsed] = useState(false);
@@ -240,7 +285,9 @@ function App() {
     setError(null);
     try {
       if (editing === "new") {
-        const result = await api<MutationResult>("/api/shortcuts", { method: "POST", body: JSON.stringify(toStructuredPayload(values)) });
+        const result = values.raw
+          ? await api<MutationResult>("/api/shortcuts/raw", { method: "POST", body: JSON.stringify({ yaml: values.raw_yaml, folder: values.folder }) })
+          : await api<MutationResult>("/api/shortcuts", { method: "POST", body: JSON.stringify(toStructuredPayload(values)) });
         setNotice(`Shortcut added. ${reloadMessage(result.reload)}`);
       } else if (editing) {
         const path = values.raw ? `/api/shortcuts/${editing.id}/raw` : `/api/shortcuts/${editing.id}`;
@@ -288,6 +335,25 @@ function App() {
     }
   };
 
+  const importMacOSReplacements = async (folder: string, replacements: MacOSTextReplacementItem[]) => {
+    setNotice("");
+    setError(null);
+    try {
+      const result = await api<MacOSTextReplacementImportResult>("/api/import/macos-text-replacements", {
+        method: "POST",
+        body: JSON.stringify({ folder, replacements })
+      });
+      const reloadText = result.imported_count > 0 ? ` ${reloadMessage(result.reload)}` : "";
+      setNotice(`Imported ${result.imported_count} macOS replacements. Skipped ${result.skipped_count}.${reloadText}`);
+      setImportingMacOS(false);
+      await refresh();
+      return result;
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
   const dropShortcut = async (shortcutId: string, folder: string) => {
     const shortcut = shortcuts.find((item) => item.id === shortcutId);
     if (!shortcut || shortcut.folder === folder) return;
@@ -304,6 +370,28 @@ function App() {
       await refresh();
     } catch (err) {
       setError(normalizeError(err));
+    }
+  };
+
+  const bulkUpdateShortcutOptions = async (selectedShortcuts: Shortcut[], patch: ShortcutOptionPatch) => {
+    const editableShortcuts = selectedShortcuts.filter((shortcut) => shortcut.editable && shortcut.supported && shortcut.trigger);
+    if (editableShortcuts.length === 0) return;
+    setNotice("");
+    setError(null);
+    try {
+      let reload: Record<string, unknown> | null = null;
+      for (const shortcut of editableShortcuts) {
+        const result = await api<MutationResult>(`/api/shortcuts/${shortcut.id}`, {
+          method: "PUT",
+          body: JSON.stringify(toShortcutUpdatePayload(shortcut, patch))
+        });
+        reload = result.reload;
+      }
+      setNotice(`Updated ${editableShortcuts.length} shortcut${editableShortcuts.length === 1 ? "" : "s"}. ${reloadMessage(reload)}`);
+      await refresh();
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
     }
   };
 
@@ -417,10 +505,12 @@ function App() {
             search={search}
             setSearch={setSearch}
             onAdd={() => setEditing("new")}
+            onImportMacOS={() => setImportingMacOS(true)}
             onCreateFolder={() => setCreatingFolder(true)}
             onEdit={setEditing}
             onMove={setMoving}
             onDelete={deleteShortcut}
+            onBulkUpdateOptions={bulkUpdateShortcutOptions}
           />
         )}
         {view === "health" && <HealthView status={status} onValidate={runValidation} />}
@@ -452,6 +542,14 @@ function App() {
           onCreate={createFolder}
         />
       )}
+      {importingMacOS && (
+        <MacOSImportDialog
+          folders={folders}
+          initialFolder={selectedFolder !== "All" ? selectedFolder : "Root"}
+          onClose={() => setImportingMacOS(false)}
+          onImport={importMacOSReplacements}
+        />
+      )}
     </div>
   );
 }
@@ -461,16 +559,81 @@ function ShortcutsView(props: {
   search: string;
   setSearch: (value: string) => void;
   onAdd: () => void;
+  onImportMacOS: () => void;
   onCreateFolder: () => void;
   onEdit: (shortcut: Shortcut) => void;
   onMove: (shortcut: Shortcut) => void;
   onDelete: (shortcut: Shortcut) => void;
+  onBulkUpdateOptions: (shortcuts: Shortcut[], patch: ShortcutOptionPatch) => Promise<void>;
 }) {
+  const [sortKey, setSortKey] = useState<ShortcutSortKey>("trigger");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkSaving, setBulkSaving] = useState(false);
+
+  const sortedShortcuts = useMemo(() => sortShortcuts(props.shortcuts, sortKey, sortDirection), [props.shortcuts, sortDirection, sortKey]);
+  const selectableShortcuts = sortedShortcuts.filter(isBulkEditableShortcut);
+  const selectedShortcuts = sortedShortcuts.filter((shortcut) => selectedIds.has(shortcut.id));
+  const allVisibleSelected = selectableShortcuts.length > 0 && selectableShortcuts.every((shortcut) => selectedIds.has(shortcut.id));
+
+  useEffect(() => {
+    const visibleIds = new Set(props.shortcuts.map((shortcut) => shortcut.id));
+    setSelectedIds((current) => new Set([...current].filter((id) => visibleIds.has(id))));
+  }, [props.shortcuts]);
+
+  const changeSort = (key: ShortcutSortKey) => {
+    if (sortKey === key) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDirection("asc");
+    }
+  };
+
+  const toggleShortcut = (shortcut: Shortcut, checked: boolean) => {
+    if (!isBulkEditableShortcut(shortcut)) return;
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(shortcut.id);
+      } else {
+        next.delete(shortcut.id);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllVisible = (checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const shortcut of selectableShortcuts) {
+        if (checked) {
+          next.add(shortcut.id);
+        } else {
+          next.delete(shortcut.id);
+        }
+      }
+      return next;
+    });
+  };
+
+  const applyBulkPatch = async (patch: ShortcutOptionPatch) => {
+    if (selectedShortcuts.length === 0) return;
+    setBulkSaving(true);
+    try {
+      await props.onBulkUpdateOptions(selectedShortcuts, patch);
+      setSelectedIds(new Set());
+    } finally {
+      setBulkSaving(false);
+    }
+  };
+
   return (
     <section>
       <div className="toolbar">
         <h1>Shortcuts</h1>
         <div className="toolbarActions">
+          <button onClick={props.onImportMacOS}>Import from macOS</button>
           <button onClick={props.onCreateFolder}>New Folder</button>
           <button className="primary" onClick={props.onAdd}>Add Shortcut</button>
         </div>
@@ -481,17 +644,40 @@ function ShortcutsView(props: {
         value={props.search}
         onChange={(event) => props.setSearch(event.target.value)}
       />
+      {selectedShortcuts.length > 0 && (
+        <div className="bulkBar">
+          <strong>{selectedShortcuts.length} selected</strong>
+          <div className="bulkActions">
+            <button disabled={bulkSaving} onClick={() => applyBulkPatch({ word: true })}>Enable Word Trigger</button>
+            <button disabled={bulkSaving} onClick={() => applyBulkPatch({ word: false })}>Disable Word Trigger</button>
+            <button disabled={bulkSaving} onClick={() => applyBulkPatch({ propagate_case: true })}>Enable Propagate Case</button>
+            <button disabled={bulkSaving} onClick={() => applyBulkPatch({ propagate_case: false })}>Disable Propagate Case</button>
+            <button disabled={bulkSaving} onClick={() => applyBulkPatch({ case_insensitive: true })}>Enable Case-insensitive</button>
+            <button disabled={bulkSaving} onClick={() => applyBulkPatch({ case_insensitive: false })}>Disable Case-insensitive</button>
+            <button disabled={bulkSaving} onClick={() => setSelectedIds(new Set())}>Clear</button>
+          </div>
+        </div>
+      )}
       <div className="table">
-        <div className="row header">
-          <span>Trigger</span>
-          <span>Replacement</span>
-          <span>Source</span>
-          <span>Status</span>
+        <div className="row header shortcutRow">
+          <span>
+            <input
+              aria-label="Select all visible editable shortcuts"
+              checked={allVisibleSelected}
+              disabled={selectableShortcuts.length === 0}
+              type="checkbox"
+              onChange={(event) => toggleAllVisible(event.target.checked)}
+            />
+          </span>
+          <SortableHeader label="Trigger" column="trigger" sortKey={sortKey} sortDirection={sortDirection} onSort={changeSort} />
+          <SortableHeader label="Replacement" column="replacement" sortKey={sortKey} sortDirection={sortDirection} onSort={changeSort} />
+          <SortableHeader label="Source" column="source" sortKey={sortKey} sortDirection={sortDirection} onSort={changeSort} />
+          <SortableHeader label="Status" column="status" sortKey={sortKey} sortDirection={sortDirection} onSort={changeSort} />
           <span></span>
         </div>
-        {props.shortcuts.map((shortcut) => (
+        {sortedShortcuts.map((shortcut) => (
           <div
-            className="row"
+            className="row shortcutRow"
             key={shortcut.id}
             draggable={Boolean(shortcut.raw_yaml)}
             onDragStart={(event) => {
@@ -499,26 +685,92 @@ function ShortcutsView(props: {
               event.dataTransfer.effectAllowed = "move";
             }}
           >
+            <span>
+              <input
+                aria-label={`Select ${shortcut.trigger ?? "shortcut"}`}
+                checked={selectedIds.has(shortcut.id)}
+                disabled={!isBulkEditableShortcut(shortcut)}
+                type="checkbox"
+                onChange={(event) => toggleShortcut(shortcut, event.target.checked)}
+              />
+            </span>
             <strong className="triggerText">{shortcut.trigger ?? "Advanced entry"}</strong>
             <span className="preview">{shortcut.replace ?? shortcut.form ?? "Unsupported match type"}</span>
             <span>{sourceLabel(shortcut)}</span>
             <StatusPill ok={shortcut.supported} label={shortcut.form ? "Form" : shortcut.supported ? "Structured" : "YAML"} />
             <span className="actions">
-              <button disabled={!shortcut.editable && !shortcut.raw_yaml} onClick={() => props.onEdit(shortcut)}>
-                Edit
-              </button>
-              <button disabled={!shortcut.raw_yaml} onClick={() => props.onMove(shortcut)}>
-                Move
-              </button>
-              <button disabled={!shortcut.editable} onClick={() => props.onDelete(shortcut)}>
-                Delete
-              </button>
+              <IconButton label="Edit" disabled={!shortcut.editable && !shortcut.raw_yaml} onClick={() => props.onEdit(shortcut)} icon={<PencilIcon />} />
+              <IconButton label="Move" disabled={!shortcut.raw_yaml} onClick={() => props.onMove(shortcut)} icon={<MoveIcon />} />
+              <IconButton label="Delete" disabled={!shortcut.editable} onClick={() => props.onDelete(shortcut)} icon={<TrashIcon />} />
             </span>
           </div>
         ))}
         {props.shortcuts.length === 0 && <div className="empty">No shortcuts found.</div>}
       </div>
     </section>
+  );
+}
+
+function SortableHeader(props: {
+  label: string;
+  column: ShortcutSortKey;
+  sortKey: ShortcutSortKey;
+  sortDirection: SortDirection;
+  onSort: (column: ShortcutSortKey) => void;
+}) {
+  const active = props.sortKey === props.column;
+  return (
+    <button
+      className={`sortHeader ${active ? "activeSort" : ""}`}
+      type="button"
+      aria-sort={active ? (props.sortDirection === "asc" ? "ascending" : "descending") : "none"}
+      onClick={() => props.onSort(props.column)}
+    >
+      <span>{props.label}</span>
+      <span className="sortIndicator">{active ? (props.sortDirection === "asc" ? "^" : "v") : ""}</span>
+    </button>
+  );
+}
+
+function IconButton(props: { label: string; disabled: boolean; icon: React.ReactNode; onClick: () => void }) {
+  return (
+    <button className="iconButton" type="button" aria-label={props.label} title={props.label} disabled={props.disabled} onClick={props.onClick}>
+      {props.icon}
+    </button>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20h4l11-11-4-4L4 16v4Z" />
+      <path d="m14 6 4 4" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M6 7l1 13h10l1-13" />
+      <path d="M9 7V4h6v3" />
+    </svg>
+  );
+}
+
+function MoveIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 2v20" />
+      <path d="m8 6 4-4 4 4" />
+      <path d="m8 18 4 4 4-4" />
+      <path d="M2 12h20" />
+      <path d="m6 8-4 4 4 4" />
+      <path d="m18 8 4 4-4 4" />
+    </svg>
   );
 }
 
@@ -591,21 +843,24 @@ function ShortcutDialog(props: {
   const [form, setForm] = useState(props.shortcut?.form ?? "");
   const [formFieldsYaml, setFormFieldsYaml] = useState(props.shortcut?.form_fields_yaml ?? "");
   const [formFields, setFormFields] = useState<FormFieldDraft[]>(() => parseFormFieldsYaml(props.shortcut?.form_fields_yaml ?? ""));
-  const [matchType, setMatchType] = useState<"replace" | "form">(props.shortcut?.form ? "form" : "replace");
+  const [matchType, setMatchType] = useState<"replace" | "form" | "yaml">(props.shortcut?.form ? "form" : "replace");
   const [label, setLabel] = useState(props.shortcut?.label ?? "");
   const [word, setWord] = useState(Boolean(props.shortcut?.word));
   const [propagateCase, setPropagateCase] = useState(Boolean(props.shortcut?.propagate_case));
+  const [caseInsensitive, setCaseInsensitive] = useState(Boolean(props.shortcut?.case_insensitive));
   const [uppercaseStyle, setUppercaseStyle] = useState(props.shortcut?.uppercase_style ?? "");
   const [forceMode, setForceMode] = useState(props.shortcut?.force_mode ?? "");
   const [folder, setFolder] = useState(props.shortcut?.folder ?? props.initialFolder);
   const [rawYaml, setRawYaml] = useState(props.shortcut?.raw_yaml ?? "");
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
-  const raw = Boolean(props.shortcut && !props.shortcut.supported);
+  const editingRaw = Boolean(props.shortcut && !props.shortcut.supported);
+  const raw = editingRaw || matchType === "yaml";
 
-  const changeMatchType = (nextType: "replace" | "form") => {
+  const changeMatchType = (nextType: "replace" | "form" | "yaml") => {
     if (nextType === "form" && !form && replace) setForm(replace);
     if (nextType === "replace" && !replace && form) setReplace(form);
+    if (nextType === "yaml" && !rawYaml.trim()) setRawYaml('trigger: ":example"\nreplace: "Example replacement"\n');
     setMatchType(nextType);
   };
 
@@ -649,6 +904,7 @@ function ShortcutDialog(props: {
       label,
       word,
       propagate_case: propagateCase,
+      case_insensitive: caseInsensitive,
       uppercase_style: uppercaseStyle,
       force_mode: forceMode,
       folder,
@@ -674,10 +930,16 @@ function ShortcutDialog(props: {
         </div>
         {props.shortcut && <div className="source">Source: {props.shortcut.file}</div>}
         {localError && <div className="formError">{localError}</div>}
-        {raw ? (
+        {editingRaw ? (
           <label>
             Match YAML
-            <textarea className="codeInput" value={rawYaml} onChange={(event) => setRawYaml(event.target.value)} rows={14} />
+            <textarea
+              className="codeInput"
+              value={rawYaml}
+              onChange={(event) => setRawYaml(event.target.value)}
+              onKeyDown={(event) => handleCodeTextareaKeyDown(event, setRawYaml)}
+              rows={14}
+            />
           </label>
         ) : (
           <>
@@ -687,21 +949,36 @@ function ShortcutDialog(props: {
             </label>
             <label>
               Match type
-              <select value={matchType} onChange={(event) => changeMatchType(event.target.value as "replace" | "form")}>
+              <select value={matchType} onChange={(event) => changeMatchType(event.target.value as "replace" | "form" | "yaml")}>
                 <option value="replace">Text replacement</option>
                 <option value="form">Form</option>
+                {!props.shortcut && <option value="yaml">Raw YAML</option>}
               </select>
             </label>
-            <label>
-              Trigger
-              <input value={trigger} onChange={(event) => setTrigger(event.target.value)} placeholder=":nfse" />
-            </label>
-            {matchType === "replace" ? (
+            {matchType === "yaml" ? (
+              <label>
+                Match YAML
+                <textarea
+                  className="codeInput"
+                  value={rawYaml}
+                  onChange={(event) => setRawYaml(event.target.value)}
+                  onKeyDown={(event) => handleCodeTextareaKeyDown(event, setRawYaml)}
+                  rows={14}
+                  placeholder={'trigger: ":date"\nreplace: "{{today}}"\nvars:\n  - name: today\n    type: date'}
+                />
+              </label>
+            ) : (
+              <>
+                <label>
+                  Trigger
+                  <input value={trigger} onChange={(event) => setTrigger(event.target.value)} placeholder=":nfse" />
+                </label>
+                {matchType === "replace" ? (
               <label>
                 Replacement
                 <textarea value={replace} onChange={(event) => setReplace(event.target.value)} rows={8} />
               </label>
-            ) : (
+                ) : (
               <>
                 <label>
                   <LabelWithInfo text="Form template" info="Use double square brackets for fields Espanso should ask for, like [[name]], [[order_id]], or [[message]]. Reuse the same placeholder wherever the same answer should appear. Add matching field options below when you need textarea, choice, or list controls." />
@@ -714,42 +991,56 @@ function ShortcutDialog(props: {
                 />
                 <label>
                   <LabelWithInfo text="Form fields YAML" info="This is the Espanso form_fields mapping generated by the visual builder. Edit it directly for advanced Espanso form options; using the builder again will regenerate this YAML." />
-                  <textarea className="codeInput compactCodeInput" value={formFieldsYaml} onChange={(event) => setFormFieldsYaml(event.target.value)} rows={7} placeholder={"name:\n  type: text\norder_id:\n  type: text"} />
+                  <textarea
+                    className="codeInput compactCodeInput"
+                    value={formFieldsYaml}
+                    onChange={(event) => setFormFieldsYaml(event.target.value)}
+                    onKeyDown={(event) => handleCodeTextareaKeyDown(event, setFormFieldsYaml)}
+                    rows={7}
+                    placeholder={"name:\n  type: text\norder_id:\n  type: text"}
+                  />
+                </label>
+              </>
+                )}
+                <label>
+                  Label
+                  <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Optional display name" />
+                </label>
+                <div className="optionGrid">
+                  <label className="checkRow">
+                    <input type="checkbox" checked={word} onChange={(event) => setWord(event.target.checked)} />
+                    <span>Word trigger</span>
+                    <InfoButton text="Only expands when the trigger is a complete word, so it will not fire inside another word. Use this for plain-word triggers that should wait for a word boundary." />
+                  </label>
+                  <label className="checkRow">
+                    <input type="checkbox" checked={propagateCase} onChange={(event) => setPropagateCase(event.target.checked)} />
+                    <span>Propagate case</span>
+                    <InfoButton text="Matches the replacement casing to how you typed the trigger. Use it when the same shortcut should work in lowercase, Title Case, or uppercase contexts." />
+                  </label>
+                  <label className="checkRow">
+                    <input type="checkbox" checked={caseInsensitive} onChange={(event) => setCaseInsensitive(event.target.checked)} />
+                    <span>Case-insensitive trigger</span>
+                    <InfoButton text="Expands when the trigger is typed with different letter casing, such as .nfsABN for a .nfsabn trigger." />
+                  </label>
+                </div>
+                <label>
+                  Uppercase style
+                  <select value={uppercaseStyle} onChange={(event) => setUppercaseStyle(event.target.value)}>
+                    <option value="">Default</option>
+                    <option value="capitalize">Capitalize</option>
+                    <option value="uppercase">Uppercase</option>
+                  </select>
+                </label>
+                <label>
+                  <LabelWithInfo text="Force mode" info="Default uses Espanso's global injection setting. Clipboard pastes the replacement through the clipboard, which is usually faster for long text but may briefly overwrite clipboard contents. Keys types the replacement as keystrokes, which can work better in apps that block clipboard paste but is slower." />
+                  <select value={forceMode} onChange={(event) => setForceMode(event.target.value)}>
+                    <option value="">Default</option>
+                    <option value="clipboard">Clipboard</option>
+                    <option value="keys">Keys</option>
+                  </select>
                 </label>
               </>
             )}
-            <label>
-              Label
-              <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Optional display name" />
-            </label>
-            <div className="optionGrid">
-              <label className="checkRow">
-                <input type="checkbox" checked={word} onChange={(event) => setWord(event.target.checked)} />
-                <span>Word trigger</span>
-                <InfoButton text="Only expands when the trigger is a complete word, so it will not fire inside another word. Use this for plain-word triggers that should wait for a word boundary." />
-              </label>
-              <label className="checkRow">
-                <input type="checkbox" checked={propagateCase} onChange={(event) => setPropagateCase(event.target.checked)} />
-                <span>Propagate case</span>
-                <InfoButton text="Matches the replacement casing to how you typed the trigger. Use it when the same shortcut should work in lowercase, Title Case, or uppercase contexts." />
-              </label>
-            </div>
-            <label>
-              Uppercase style
-              <select value={uppercaseStyle} onChange={(event) => setUppercaseStyle(event.target.value)}>
-                <option value="">Default</option>
-                <option value="capitalize">Capitalize</option>
-                <option value="uppercase">Uppercase</option>
-              </select>
-            </label>
-            <label>
-              <LabelWithInfo text="Force mode" info="Default uses Espanso's global injection setting. Clipboard pastes the replacement through the clipboard, which is usually faster for long text but may briefly overwrite clipboard contents. Keys types the replacement as keystrokes, which can work better in apps that block clipboard paste but is slower." />
-              <select value={forceMode} onChange={(event) => setForceMode(event.target.value)}>
-                <option value="">Default</option>
-                <option value="clipboard">Clipboard</option>
-                <option value="keys">Keys</option>
-              </select>
-            </label>
           </>
         )}
         <button className="primary" disabled={saving} type="submit">
@@ -919,6 +1210,149 @@ function FolderDialog(props: { folders: FolderItem[]; onClose: () => void; onCre
         <button className="primary" disabled={creating} type="submit">
           {creating ? "Creating..." : "Create"}
         </button>
+      </form>
+    </div>
+  );
+}
+
+function MacOSImportDialog(props: {
+  folders: FolderItem[];
+  initialFolder: string;
+  onClose: () => void;
+  onImport: (folder: string, replacements: MacOSTextReplacementItem[]) => Promise<MacOSTextReplacementImportResult>;
+}) {
+  const [folder, setFolder] = useState(props.initialFolder);
+  const [preview, setPreview] = useState<MacOSTextReplacementPreview | null>(null);
+  const [selectedIndexes, setSelectedIndexes] = useState<Set<number>>(new Set());
+  const [loadingPreview, setLoadingPreview] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [localError, setLocalError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    api<MacOSTextReplacementPreview>("/api/import/macos-text-replacements")
+      .then((result) => {
+        if (active) {
+          setPreview(result);
+          setSelectedIndexes(new Set(result.items.map((item, index) => (isImportableMacOSReplacement(item) ? index : -1)).filter((index) => index >= 0)));
+        }
+      })
+      .catch((err) => {
+        if (active) setLocalError(normalizeError(err).message);
+      })
+      .finally(() => {
+        if (active) setLoadingPreview(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const importableIndexes = preview?.items.map((item, index) => (isImportableMacOSReplacement(item) ? index : -1)).filter((index) => index >= 0) ?? [];
+  const importableCount = importableIndexes.length;
+  const selectedCount = selectedIndexes.size;
+  const allImportableSelected = importableCount > 0 && selectedCount === importableCount;
+
+  const toggleSelected = (index: number, checked: boolean) => {
+    setSelectedIndexes((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(index);
+      } else {
+        next.delete(index);
+      }
+      return next;
+    });
+  };
+
+  const selectAll = () => setSelectedIndexes(new Set(importableIndexes));
+  const clearSelection = () => setSelectedIndexes(new Set());
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!preview || selectedCount === 0) {
+      setLocalError("Select at least one replacement to import.");
+      return;
+    }
+    setImporting(true);
+    setLocalError("");
+    try {
+      const replacements = [...selectedIndexes].sort((a, b) => a - b).map((index) => preview.items[index]);
+      await props.onImport(folder, replacements);
+    } catch (err) {
+      setLocalError(normalizeError(err).message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div className="modalBackdrop">
+      <form className="modal importModal" onSubmit={submit}>
+        <div className="toolbar">
+          <h2>Import from macOS</h2>
+          <div className="toolbarActions">
+            <button className="primary" disabled={loadingPreview || importing || selectedCount === 0} type="submit">
+              {importing ? "Importing..." : `Import ${selectedCount}`}
+            </button>
+            <button type="button" onClick={props.onClose}>Close</button>
+          </div>
+        </div>
+        {localError && <div className="formError">{localError}</div>}
+        <label>
+          Destination folder
+          <FolderInput value={folder} folders={props.folders} onChange={setFolder} />
+        </label>
+        {loadingPreview && <div className="empty compactEmpty">Loading macOS replacements...</div>}
+        {!loadingPreview && preview && (
+          <>
+            <div className="importSummary">
+              <strong>{selectedCount} of {importableCount}</strong>
+              <span>{macOSImportSourceLabel(preview)}</span>
+            </div>
+            {importableCount > 0 && (
+              <div className="importSelectionActions">
+                <button type="button" disabled={allImportableSelected} onClick={selectAll}>Select all</button>
+                <button type="button" disabled={selectedCount === 0} onClick={clearSelection}>Ignore all</button>
+              </div>
+            )}
+            {!preview.available && <div className="empty compactEmpty">macOS text replacements were not found on this machine.</div>}
+            {preview.unsupported_count > 0 && <div className="source">{preview.unsupported_count} entries were ignored because they were not in the expected macOS format.</div>}
+            <div className="importPreview">
+              <div className="importPreviewRow header">
+                <span>
+                  <input
+                    aria-label="Select all importable replacements"
+                    checked={allImportableSelected}
+                    disabled={importableCount === 0}
+                    type="checkbox"
+                    onChange={(event) => (event.target.checked ? selectAll() : clearSelection())}
+                  />
+                </span>
+                <span>Trigger</span>
+                <span>Replacement</span>
+                <span>Status</span>
+              </div>
+              {preview.items.map((item, index) => (
+                <div className="importPreviewRow" key={`${item.trigger}-${index}`}>
+                  <span>
+                    <input
+                      aria-label={`Import ${item.trigger || "replacement"}`}
+                      checked={selectedIndexes.has(index)}
+                      disabled={!isImportableMacOSReplacement(item)}
+                      type="checkbox"
+                      onChange={(event) => toggleSelected(index, event.target.checked)}
+                    />
+                  </span>
+                  <strong>{item.trigger || "Empty trigger"}</strong>
+                  <span>{item.replacement || "Empty replacement"}</span>
+                  <StatusPill ok={item.enabled} label={item.enabled ? "Enabled" : "Disabled"} />
+                </div>
+              ))}
+              {preview.items.length === 0 && <div className="empty compactEmpty">No text replacements found.</div>}
+            </div>
+          </>
+        )}
       </form>
     </div>
   );
@@ -1184,6 +1618,83 @@ function reloadMessage(reload: Record<string, unknown> | null) {
   return "Espanso reload completed.";
 }
 
+function handleCodeTextareaKeyDown(
+  event: React.KeyboardEvent<HTMLTextAreaElement>,
+  setValue: React.Dispatch<React.SetStateAction<string>>
+) {
+  if (event.key !== "Tab") return;
+  event.preventDefault();
+
+  const textarea = event.currentTarget;
+  const value = textarea.value;
+  const selectionStart = textarea.selectionStart;
+  const selectionEnd = textarea.selectionEnd;
+  const indent = "  ";
+  const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
+
+  if (selectionStart !== selectionEnd) {
+    const lineEnd = selectionEnd < value.length ? value.indexOf("\n", selectionEnd) : -1;
+    const blockEnd = lineEnd === -1 ? value.length : lineEnd;
+    const before = value.slice(0, lineStart);
+    const block = value.slice(lineStart, blockEnd);
+    const after = value.slice(blockEnd);
+
+    if (event.shiftKey) {
+      const lines = block.split("\n");
+      let removedBeforeStart = 0;
+      let removedTotal = 0;
+      const nextBlock = lines.map((line, index) => {
+        const removeCount = line.startsWith(indent) ? indent.length : line.startsWith(" ") ? 1 : 0;
+        if (removeCount > 0) {
+          removedTotal += removeCount;
+          if (lineStart + lines.slice(0, index).join("\n").length + (index > 0 ? 1 : 0) < selectionStart) {
+            removedBeforeStart += removeCount;
+          }
+          return line.slice(removeCount);
+        }
+        return line;
+      }).join("\n");
+      const nextValue = before + nextBlock + after;
+      setValue(nextValue);
+      requestAnimationFrame(() => {
+        textarea.selectionStart = Math.max(lineStart, selectionStart - removedBeforeStart);
+        textarea.selectionEnd = Math.max(textarea.selectionStart, selectionEnd - removedTotal);
+      });
+      return;
+    }
+
+    const nextBlock = block.split("\n").map((line) => indent + line).join("\n");
+    const lineCount = block.split("\n").length;
+    const nextValue = before + nextBlock + after;
+    setValue(nextValue);
+    requestAnimationFrame(() => {
+      textarea.selectionStart = selectionStart + indent.length;
+      textarea.selectionEnd = selectionEnd + indent.length * lineCount;
+    });
+    return;
+  }
+
+  if (event.shiftKey) {
+    const linePrefix = value.slice(lineStart, selectionStart);
+    const removeCount = linePrefix.endsWith(indent) ? indent.length : linePrefix.endsWith(" ") ? 1 : 0;
+    if (removeCount === 0) return;
+    const nextValue = value.slice(0, selectionStart - removeCount) + value.slice(selectionStart);
+    setValue(nextValue);
+    requestAnimationFrame(() => {
+      textarea.selectionStart = selectionStart - removeCount;
+      textarea.selectionEnd = selectionStart - removeCount;
+    });
+    return;
+  }
+
+  const nextValue = value.slice(0, selectionStart) + indent + value.slice(selectionEnd);
+  setValue(nextValue);
+  requestAnimationFrame(() => {
+    textarea.selectionStart = selectionStart + indent.length;
+    textarea.selectionEnd = selectionStart + indent.length;
+  });
+}
+
 function toStructuredPayload(values: ShortcutFormValues) {
   return {
     trigger: values.trigger,
@@ -1194,13 +1705,64 @@ function toStructuredPayload(values: ShortcutFormValues) {
     label: values.label.trim() || null,
     word: values.word,
     propagate_case: values.propagate_case,
+    case_insensitive: values.case_insensitive,
     uppercase_style: values.uppercase_style || null,
     force_mode: values.force_mode || null
   };
 }
 
+function toShortcutUpdatePayload(shortcut: Shortcut, patch: ShortcutOptionPatch) {
+  const isForm = Boolean(shortcut.form);
+  return {
+    trigger: shortcut.trigger ?? "",
+    replace: isForm ? "" : shortcut.replace ?? "",
+    form: isForm ? shortcut.form : null,
+    form_fields_yaml: isForm ? shortcut.form_fields_yaml || null : null,
+    label: shortcut.label || null,
+    word: patch.word ?? Boolean(shortcut.word),
+    propagate_case: patch.propagate_case ?? Boolean(shortcut.propagate_case),
+    case_insensitive: patch.case_insensitive ?? Boolean(shortcut.case_insensitive),
+    uppercase_style: shortcut.uppercase_style || null,
+    force_mode: shortcut.force_mode || null
+  };
+}
+
+function sortShortcuts(shortcuts: Shortcut[], sortKey: ShortcutSortKey, direction: SortDirection) {
+  const multiplier = direction === "asc" ? 1 : -1;
+  return [...shortcuts].sort((a, b) => {
+    const result = shortcutSortValue(a, sortKey).localeCompare(shortcutSortValue(b, sortKey), undefined, {
+      numeric: true,
+      sensitivity: "base"
+    });
+    if (result !== 0) return result * multiplier;
+    return (a.trigger ?? "").localeCompare(b.trigger ?? "", undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+function shortcutSortValue(shortcut: Shortcut, sortKey: ShortcutSortKey) {
+  if (sortKey === "trigger") return shortcut.trigger ?? "";
+  if (sortKey === "replacement") return shortcut.replace ?? shortcut.form ?? "";
+  if (sortKey === "source") return sourceLabel(shortcut);
+  return shortcut.form ? "Form" : shortcut.supported ? "Structured" : "YAML";
+}
+
+function isBulkEditableShortcut(shortcut: Shortcut) {
+  return shortcut.editable && shortcut.supported && Boolean(shortcut.trigger);
+}
+
 function sourceLabel(shortcut: Shortcut) {
   return shortcut.folder === "Root" ? shortcut.file : `${shortcut.folder}/${shortcut.file}`;
+}
+
+function macOSImportSourceLabel(preview: MacOSTextReplacementPreview) {
+  const version = preview.macos_version ? `macOS ${preview.macos_version}` : "macOS";
+  const source = preview.source_path ?? "preferences";
+  const key = preview.source_key ? ` using ${preview.source_key}` : "";
+  return `importable replacements selected from ${source}${key} on ${version}`;
+}
+
+function isImportableMacOSReplacement(item: MacOSTextReplacementItem) {
+  return item.enabled && Boolean(item.trigger.trim()) && item.replacement !== "";
 }
 
 function createFormField(name = ""): FormFieldDraft {

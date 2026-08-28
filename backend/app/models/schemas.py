@@ -39,6 +39,7 @@ class Shortcut(BaseModel):
     label: str | None = None
     word: bool | None = None
     propagate_case: bool | None = None
+    case_insensitive: bool | None = None
     uppercase_style: str | None = None
     force_mode: str | None = None
     folder: str
@@ -60,6 +61,7 @@ class ShortcutCreate(BaseModel):
     label: str | None = None
     word: bool = False
     propagate_case: bool = False
+    case_insensitive: bool = False
     uppercase_style: str | None = None
     force_mode: str | None = None
 
@@ -72,6 +74,7 @@ class ShortcutUpdate(BaseModel):
     label: str | None = None
     word: bool = False
     propagate_case: bool = False
+    case_insensitive: bool = False
     uppercase_style: str | None = None
     force_mode: str | None = None
 
@@ -80,8 +83,49 @@ class ShortcutRawUpdate(BaseModel):
     yaml: str
 
 
+class ShortcutRawCreate(BaseModel):
+    yaml: str
+    folder: str | None = None
+
+
 class ShortcutMove(BaseModel):
     folder: str | None = None
+
+
+class MacOSTextReplacementItem(BaseModel):
+    trigger: str
+    replacement: str
+    enabled: bool = True
+
+
+class MacOSTextReplacementPreview(ApiResult):
+    available: bool
+    macos_version: str | None = None
+    source_path: str | None = None
+    source_key: str | None = None
+    items: list[MacOSTextReplacementItem] = Field(default_factory=list)
+    unsupported_count: int = 0
+
+
+class MacOSTextReplacementImport(BaseModel):
+    folder: str | None = None
+    replacements: list[MacOSTextReplacementItem] | None = None
+
+
+class MacOSTextReplacementSkip(BaseModel):
+    trigger: str | None = None
+    replacement: str | None = None
+    reason: str
+
+
+class MacOSTextReplacementImportResult(ApiResult):
+    source_path: str | None = None
+    total_found: int = 0
+    imported_count: int = 0
+    skipped_count: int = 0
+    imported: list[Shortcut] = Field(default_factory=list)
+    skipped: list[MacOSTextReplacementSkip] = Field(default_factory=list)
+    reload: dict[str, Any] | None = None
 
 
 class FolderCreate(BaseModel):

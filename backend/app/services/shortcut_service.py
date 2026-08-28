@@ -7,12 +7,26 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarstring import LiteralScalarString
 
-from app.models.schemas import Shortcut, ShortcutCreate, ShortcutMove, ShortcutRawUpdate, ShortcutUpdate, ValidationResult
+from app.models.schemas import (
+    MacOSTextReplacementImport,
+    MacOSTextReplacementImportResult,
+    MacOSTextReplacementPreview,
+    MacOSTextReplacementSkip,
+    Shortcut,
+    ShortcutCreate,
+    ShortcutMove,
+    ShortcutRawCreate,
+    ShortcutRawUpdate,
+    ShortcutUpdate,
+    ValidationResult,
+)
 from app.services.backup_service import BackupService
 from app.services.espanso_discovery import EspansoDiscoveryService, EspansoPaths
+from app.services.macos_text_replacement_importer import MacOSTextReplacementImportService
 from app.services.reloader import EspansoReloadService, ReloadResult
-from app.services.yaml_service import YamlMatchService
+from app.services.yaml_service import YamlMatchService, case_insensitive_regex_for_trigger, normalize_newlines
 from app.utils.errors import AppError
 
 MANAGED_FILE = "espanso-shortcut-manager.yml"
@@ -23,9 +37,11 @@ class ShortcutService:
         self,
         discovery: EspansoDiscoveryService | None = None,
         reloader: EspansoReloadService | None = None,
+        macos_importer: MacOSTextReplacementImportService | None = None,
     ) -> None:
         self.discovery = discovery or EspansoDiscoveryService()
         self.reloader = reloader or EspansoReloadService(self.discovery)
+        self.macos_importer = macos_importer or MacOSTextReplacementImportService()
         self.yaml = YamlMatchService()
 
     def status(self) -> dict[str, Any]:
@@ -72,6 +88,24 @@ class ShortcutService:
             lambda data: self._append_shortcut(data, payload, managed),
         )
 
+    def add_shortcut_raw(self, payload: ShortcutRawCreate) -> tuple[Shortcut, ReloadResult]:
+        entry = self._raw_match_entry_from_yaml(payload.yaml)
+        managed = self._managed_file_for_folder(payload.folder)
+        if not managed.exists():
+            managed.parent.mkdir(parents=True, exist_ok=True)
+            initial = CommentedMap({"matches": CommentedSeq()})
+            return self._mutate_file(
+                managed,
+                "raw-add",
+                lambda data: self._append_raw_shortcut(data, entry, managed),
+                create_initial=initial,
+            )
+        return self._mutate_file(
+            managed,
+            "raw-add",
+            lambda data: self._append_raw_shortcut(data, entry, managed),
+        )
+
     def update_shortcut(self, shortcut_id: str, payload: ShortcutUpdate) -> tuple[Shortcut, ReloadResult]:
         self._validate_payload(payload.trigger, payload.replace, payload.form)
         shortcut = self.get_shortcut(shortcut_id)
@@ -88,9 +122,7 @@ class ShortcutService:
     def update_shortcut_raw(self, shortcut_id: str, payload: ShortcutRawUpdate) -> tuple[Shortcut, ReloadResult]:
         shortcut = self.get_shortcut(shortcut_id)
         path = self._allowed_file(Path(shortcut.path))
-        replacement = self.yaml.loads(payload.yaml)
-        if not isinstance(replacement, dict):
-            raise AppError("INVALID_MATCH_ENTRY", "Raw YAML must be a single match mapping.", status_code=422)
+        replacement = self._raw_match_entry_from_yaml(payload.yaml)
         return self._mutate_file(
             path,
             "raw-edit",
@@ -191,6 +223,91 @@ class ShortcutService:
         target.mkdir(parents=True, exist_ok=True)
         return relative
 
+    def preview_macos_text_replacements(self) -> MacOSTextReplacementPreview:
+        return self.macos_importer.preview()
+
+    def import_macos_text_replacements(self, payload: MacOSTextReplacementImport) -> MacOSTextReplacementImportResult:
+        preview = self.preview_macos_text_replacements()
+        skipped: list[MacOSTextReplacementSkip] = []
+        entries: list[CommentedMap] = []
+        seen = {shortcut.trigger for shortcut in self.list_shortcuts() if shortcut.trigger}
+        incoming_seen: set[str] = set()
+        selected_counts = self._selected_replacement_counts(payload)
+
+        for item in preview.items:
+            if selected_counts is not None:
+                selection_key = self._replacement_selection_key(item.trigger, item.replacement)
+                selected_count = selected_counts.get(selection_key, 0)
+                if selected_count <= 0:
+                    skipped.append(MacOSTextReplacementSkip(trigger=item.trigger, replacement=item.replacement, reason="ignored"))
+                    continue
+                selected_counts[selection_key] = selected_count - 1
+
+            trigger = item.trigger.strip()
+            replacement = item.replacement
+            if not item.enabled:
+                skipped.append(MacOSTextReplacementSkip(trigger=item.trigger, replacement=item.replacement, reason="disabled"))
+                continue
+            if not trigger or replacement == "":
+                skipped.append(MacOSTextReplacementSkip(trigger=item.trigger, replacement=item.replacement, reason="empty"))
+                continue
+            if trigger in seen:
+                skipped.append(MacOSTextReplacementSkip(trigger=trigger, replacement=replacement, reason="duplicate_existing"))
+                continue
+            if trigger in incoming_seen:
+                skipped.append(MacOSTextReplacementSkip(trigger=trigger, replacement=replacement, reason="duplicate_import"))
+                continue
+
+            incoming_seen.add(trigger)
+            entries.append(CommentedMap({"trigger": trigger, "replace": replacement}))
+
+        if not entries:
+            return MacOSTextReplacementImportResult(
+                source_path=preview.source_path,
+                total_found=len(preview.items),
+                imported_count=0,
+                skipped_count=len(skipped),
+                skipped=skipped,
+                reload=None,
+            )
+
+        target = self._managed_file_for_folder(payload.folder)
+        original_text = target.read_text(encoding="utf-8") if target.exists() else self.yaml.dumps({"matches": []})
+        data = self.yaml.loads(original_text)
+        if not isinstance(data, dict):
+            raise AppError("INVALID_MATCH_FILE", "Match file root must be a mapping.", status_code=422)
+        matches = data.setdefault("matches", CommentedSeq())
+        if not isinstance(matches, list):
+            raise AppError("INVALID_MATCH_FILE", "matches must be a list.", status_code=422)
+        for entry in entries:
+            matches.append(entry)
+
+        self._validate_proposed(data)
+        self._reject_duplicate_proposed(target, data, None)
+        reload_result = self._replace_file_with_content(target, self.yaml.dumps(data), "import-macos", original_text=original_text)
+        imported = self._resolve_imported_shortcuts(target, entries)
+        return MacOSTextReplacementImportResult(
+            source_path=preview.source_path,
+            total_found=len(preview.items),
+            imported_count=len(imported),
+            skipped_count=len(skipped),
+            imported=imported,
+            skipped=skipped,
+            reload=reload_result.to_dict(),
+        )
+
+    def _selected_replacement_counts(self, payload: MacOSTextReplacementImport) -> dict[tuple[str, str], int] | None:
+        if payload.replacements is None:
+            return None
+        counts: dict[tuple[str, str], int] = {}
+        for item in payload.replacements:
+            key = self._replacement_selection_key(item.trigger, item.replacement)
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _replacement_selection_key(self, trigger: str, replacement: str) -> tuple[str, str]:
+        return (trigger, replacement)
+
     def restore_backup(self, backup_id: str) -> ReloadResult:
         backup = self._backup_service().get_backup(backup_id)
         original = self._allowed_file(Path(backup.original_path))
@@ -250,6 +367,7 @@ class ShortcutService:
             label=payload.label,
             word=payload.word,
             propagate_case=payload.propagate_case,
+            case_insensitive=payload.case_insensitive,
             uppercase_style=payload.uppercase_style,
             force_mode=payload.force_mode,
             folder=self._folder_label_for_path(path),
@@ -259,6 +377,29 @@ class ShortcutService:
             supported=True,
             kind="form" if payload.form else "basic",
             preview=payload.replace or payload.form,
+        )
+
+    def _append_raw_shortcut(self, data: Any, entry: Any, path: Path) -> Shortcut:
+        if not isinstance(data, dict):
+            raise AppError("INVALID_MATCH_FILE", "Match file root must be a mapping.", status_code=422)
+        matches = data.setdefault("matches", CommentedSeq())
+        if not isinstance(matches, list):
+            raise AppError("INVALID_MATCH_FILE", "matches must be a list.", status_code=422)
+        matches.append(entry)
+        return Shortcut(
+            id=self.yaml.shortcut_id(path, entry),
+            trigger=self.yaml.trigger_for_entry(entry),
+            replace=entry.get("replace") if isinstance(entry.get("replace"), str) else None,
+            form=entry.get("form") if isinstance(entry.get("form"), str) else None,
+            case_insensitive=self.yaml.is_case_insensitive_entry(entry),
+            folder=self._folder_label_for_path(path),
+            file=path.name,
+            path=str(path),
+            editable=self.yaml.is_supported(entry),
+            supported=self.yaml.is_supported(entry),
+            kind="form" if self.yaml.is_supported(entry) and isinstance(entry.get("form"), str) else "basic" if self.yaml.is_supported(entry) else "advanced",
+            preview=entry.get("replace") if isinstance(entry.get("replace"), str) else entry.get("form") if isinstance(entry.get("form"), str) else None,
+            raw_yaml=self.yaml.dumps(entry),
         )
 
     def _edit_shortcut(self, data: Any, shortcut_id: str, path: Path, payload: ShortcutUpdate) -> Shortcut:
@@ -276,6 +417,7 @@ class ShortcutService:
             label=payload.label,
             word=payload.word,
             propagate_case=payload.propagate_case,
+            case_insensitive=payload.case_insensitive,
             uppercase_style=payload.uppercase_style,
             force_mode=payload.force_mode,
             folder=self._folder_label_for_path(path),
@@ -296,7 +438,7 @@ class ShortcutService:
                 matches[index] = replacement
                 return Shortcut(
                     id=self.yaml.shortcut_id(path, replacement),
-                    trigger=replacement.get("trigger") if isinstance(replacement.get("trigger"), str) else None,
+                    trigger=self.yaml.trigger_for_entry(replacement),
                     replace=replacement.get("replace") if isinstance(replacement.get("replace"), str) else None,
                     form=replacement.get("form") if isinstance(replacement.get("form"), str) else None,
                     form_fields=replacement.get("form_fields") if isinstance(replacement.get("form_fields"), dict) else None,
@@ -304,6 +446,7 @@ class ShortcutService:
                     label=replacement.get("label") if isinstance(replacement.get("label"), str) else None,
                     word=replacement.get("word") if isinstance(replacement.get("word"), bool) else None,
                     propagate_case=replacement.get("propagate_case") if isinstance(replacement.get("propagate_case"), bool) else None,
+                    case_insensitive=self.yaml.is_case_insensitive_entry(replacement),
                     uppercase_style=replacement.get("uppercase_style") if isinstance(replacement.get("uppercase_style"), str) else None,
                     force_mode=replacement.get("force_mode") if isinstance(replacement.get("force_mode"), str) else None,
                     folder=self._folder_label_for_path(path),
@@ -318,14 +461,17 @@ class ShortcutService:
         raise AppError("SHORTCUT_NOT_FOUND", "Shortcut was not found.", status_code=404)
 
     def _payload_entry(self, payload: ShortcutCreate | ShortcutUpdate) -> CommentedMap:
-        entry = CommentedMap({"trigger": payload.trigger})
+        if payload.case_insensitive:
+            entry = CommentedMap({"regex": case_insensitive_regex_for_trigger(payload.trigger)})
+        else:
+            entry = CommentedMap({"trigger": payload.trigger})
         if payload.form:
-            entry["form"] = payload.form
+            entry["form"] = self._yaml_text(payload.form)
             form_fields = self._parse_form_fields(payload.form_fields_yaml)
             if form_fields:
                 entry["form_fields"] = form_fields
         else:
-            entry["replace"] = payload.replace
+            entry["replace"] = self._yaml_text(payload.replace)
         if payload.label:
             entry["label"] = payload.label
         if payload.word:
@@ -341,10 +487,16 @@ class ShortcutService:
     def _parse_form_fields(self, text: str | None) -> Any:
         if not text or not text.strip():
             return None
-        data = self.yaml.loads(text)
+        data = self.yaml.loads(normalize_newlines(text))
         if not isinstance(data, dict):
             raise AppError("INVALID_FORM_FIELDS", "Form fields YAML must be a mapping.", status_code=422)
         return data
+
+    def _yaml_text(self, text: str) -> str | LiteralScalarString:
+        normalized = normalize_newlines(text)
+        if "\n" in normalized:
+            return LiteralScalarString(normalized)
+        return normalized
 
     def _delete_shortcut(self, data: Any, shortcut_id: str, path: Path) -> Shortcut:
         matches = data.get("matches") if isinstance(data, dict) else None
@@ -499,7 +651,7 @@ class ShortcutService:
                 entry_id = self.yaml.shortcut_id(target_path, entry)
                 if excluded and entry_id == excluded[0]:
                     continue
-                trigger = entry.get("trigger")
+                trigger = self.yaml.trigger_for_entry(entry)
                 by_trigger.setdefault(trigger, []).append(
                     {
                         "id": entry_id,
@@ -537,7 +689,7 @@ class ShortcutService:
             for entry in matches:
                 if not self.yaml.is_supported(entry):
                     continue
-                trigger = entry.get("trigger")
+                trigger = self.yaml.trigger_for_entry(entry)
                 by_trigger.setdefault(trigger, []).append(
                     {
                         "id": self.yaml.shortcut_id(path, entry),
@@ -574,6 +726,11 @@ class ShortcutService:
                 return shortcut
         raise AppError("SHORTCUT_NOT_FOUND", "Moved shortcut was not found.", status_code=500)
 
+    def _resolve_imported_shortcuts(self, path: Path, entries: list[CommentedMap]) -> list[Shortcut]:
+        paths = self._paths_or_error()
+        imported_ids = {self.yaml.shortcut_id(path, entry) for entry in entries}
+        return [shortcut for shortcut in self.yaml.parse_shortcuts(path, paths.match_path) if shortcut.id in imported_ids]
+
     def _validate_payload(self, trigger: str, replace: str, form: str | None = None) -> None:
         if not trigger.strip():
             raise AppError("INVALID_TRIGGER", "Trigger cannot be empty.", status_code=422)
@@ -583,6 +740,24 @@ class ShortcutService:
             return
         if replace == "":
             raise AppError("INVALID_REPLACE", "Replacement cannot be empty.", status_code=422)
+
+    def _validate_raw_match_entry(self, entry: Any) -> None:
+        if not isinstance(entry, dict):
+            raise AppError("INVALID_MATCH_ENTRY", "Raw YAML must be a single match mapping or one-item match list.", status_code=422)
+        if "matches" in entry:
+            raise AppError("INVALID_MATCH_ENTRY", "Raw YAML must be one match entry, not a full match file.", status_code=422)
+        trigger = entry.get("trigger")
+        if not isinstance(trigger, str) or not trigger.strip():
+            raise AppError("INVALID_MATCH_ENTRY", "Raw YAML match entries must include a trigger.", status_code=422)
+
+    def _raw_match_entry_from_yaml(self, text: str) -> Any:
+        entry = self.yaml.loads(text)
+        if isinstance(entry, list):
+            if len(entry) != 1:
+                raise AppError("INVALID_MATCH_ENTRY", "Raw YAML must contain exactly one match entry.", status_code=422)
+            entry = entry[0]
+        self._validate_raw_match_entry(entry)
+        return entry
 
     def _paths_or_error(self) -> EspansoPaths:
         paths = self.discovery.discover()
