@@ -350,6 +350,15 @@ function App() {
   }, [settings?.theme]);
 
   useEffect(() => {
+    if (!notice && !error) return;
+    const timer = window.setTimeout(() => {
+      setNotice("");
+      setError(null);
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice, error]);
+
+  useEffect(() => {
     if (view === "backups") {
       api<Backup[]>("/api/backups").then(setBackups).catch((err) => setError(normalizeError(err)));
     }
@@ -706,6 +715,10 @@ function App() {
 
   return (
     <div className={`shell ${sidebarCollapsed ? "sidebarCollapsed" : ""}`}>
+      <div className="alertStack" aria-live="polite">
+        {error && <Alert type="error" title={error.code} message={error.message} details={error.details} onClose={() => setError(null)} />}
+        {notice && <Alert type="success" title="Success" message={notice} onClose={() => setNotice("")} />}
+      </div>
       <aside className="sidebar">
         <button
           className="sidebarToggle"
@@ -743,8 +756,6 @@ function App() {
         )}
       </aside>
       <main className="content">
-        {error && <Alert type="error" title={error.code} message={error.message} details={error.details} />}
-        {notice && <Alert type="success" title="Success" message={notice} />}
         {loading && <div className="loading">Loading...</div>}
         {view === "shortcuts" && (
           <ShortcutsView
@@ -2201,9 +2212,28 @@ function ConfigView({ config }: { config: ConfigPayload | null }) {
   );
 }
 
-function Alert({ type, title, message, details }: { type: "success" | "error"; title: string; message: string; details?: unknown }) {
+function Alert({
+  type,
+  title,
+  message,
+  details,
+  onClose,
+}: {
+  type: "success" | "error";
+  title: string;
+  message: string;
+  details?: unknown;
+  onClose: () => void;
+}) {
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onClose();
+    }
+  };
+
   return (
-    <div className={`alert ${type}`}>
+    <div className={`alert ${type}`} role="button" tabIndex={0} onClick={onClose} onKeyDown={handleKeyDown}>
       <strong>{title}</strong>
       <span>{message}</span>
       {details ? <pre>{JSON.stringify(details, null, 2)}</pre> : null}

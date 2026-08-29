@@ -626,12 +626,35 @@ textarea::placeholder {
   color: #a8a194;
 }
 
+.alertStack {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  z-index: 30;
+  display: grid;
+  gap: 10px;
+  width: min(860px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
 .alert {
   display: grid;
   gap: 6px;
-  margin-bottom: 16px;
+  width: 100%;
+  margin: 0;
   border-radius: 8px;
   padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+  pointer-events: auto;
+  animation: alertDrop 160ms ease-out;
+}
+
+.alert:focus-visible {
+  outline: 2px solid rgba(215, 155, 51, 0.82);
+  outline-offset: 2px;
 }
 
 .alert.success {
@@ -644,6 +667,17 @@ textarea::placeholder {
   background: rgba(205, 72, 67, 0.18);
   border: 1px solid rgba(255, 132, 126, 0.36);
   color: #ffe4df;
+}
+
+@keyframes alertDrop {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .modalBackdrop {
