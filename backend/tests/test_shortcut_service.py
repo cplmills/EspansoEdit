@@ -237,6 +237,27 @@ def test_creating_folder(service: ShortcutService, espanso_root: Path) -> None:
     assert "work/email" in service.list_folders()
 
 
+def test_deleting_folder_removes_folder_and_backs_up_files(service: ShortcutService, espanso_root: Path) -> None:
+    write_match(espanso_root, "Team/a.yml", 'matches:\n  - trigger: ":one"\n    replace: "One"\n')
+    write_match(espanso_root, "Team/Nested/b.yml", 'matches:\n  - trigger: ":two"\n    replace: "Two"\n')
+
+    result = service.delete_folder("Team")
+
+    assert result.folder == "Team"
+    assert result.removed_file_count == 2
+    assert not (espanso_root / "match" / "Team").exists()
+    backups = service.list_backups()
+    assert len(backups) == 2
+    assert {backup.operation for backup in backups} == {"folder-delete"}
+
+
+def test_deleting_root_folder_fails(service: ShortcutService) -> None:
+    with pytest.raises(AppError) as exc:
+        service.delete_folder("Root")
+
+    assert exc.value.code == "INVALID_FOLDER"
+
+
 def test_previewing_macos_text_replacements(espanso_root: Path, tmp_path: Path) -> None:
     preferences = tmp_path / ".GlobalPreferences.plist"
     write_macos_replacements(

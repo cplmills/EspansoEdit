@@ -265,7 +265,8 @@ textarea::placeholder {
   gap: 8px;
 }
 
-.folderRail button {
+.folderRail button,
+.folderRailItem {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -275,13 +276,47 @@ textarea::placeholder {
   text-align: left;
 }
 
-.folderRail button.active {
+.folderRailItem {
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.folderRailItem .folderSelect {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.folderRailItem .folderSelect:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.folderRailItem .folderDeleteButton {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  margin-right: 4px;
+  opacity: 0;
+}
+
+.folderRailItem:hover .folderDeleteButton,
+.folderRailItem .folderDeleteButton:focus-visible {
+  opacity: 1;
+}
+
+.folderRail button.active,
+.folderRailItem.active {
   background: #2f2d27;
   border-color: #d79b33;
   color: #fff7e8;
 }
 
-.folderRail button:hover {
+.folderRail button:hover,
+.folderRailItem:hover {
   border-color: #6d6657;
 }
 
@@ -774,6 +809,11 @@ textarea::placeholder {
   line-height: 1;
 }
 
+.infoButtonWrap {
+  display: inline-flex;
+  width: fit-content;
+}
+
 .tooltip {
   position: fixed;
   z-index: 20;
@@ -788,10 +828,17 @@ textarea::placeholder {
   font-weight: 500;
   line-height: 1.35;
   opacity: 0;
-  pointer-events: none;
+  pointer-events: auto;
   text-align: left;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+.tooltip a {
+  display: block;
+  margin-top: 8px;
+  color: #f0be67;
+  font-weight: 800;
 }
 
 .visibleTooltip {
@@ -965,6 +1012,12 @@ textarea::placeholder {
   color: #ffffff;
 }
 
+:root[data-theme="light"] .folderRailItem.active {
+  background: #334250;
+  border-color: #4b5d6d;
+  color: #ffffff;
+}
+
 :root[data-theme="light"] .search,
 :root[data-theme="light"] .packageInstall input,
 :root[data-theme="light"] .settingsPanel input,
@@ -1098,6 +1151,10 @@ textarea::placeholder {
   background: #ffffff;
   color: #1d2430;
   box-shadow: 0 14px 32px rgba(20, 28, 36, 0.18);
+}
+
+:root[data-theme="light"] .tooltip a {
+  color: #166c5f;
 }
 
 :root[data-theme="light"] .formError {

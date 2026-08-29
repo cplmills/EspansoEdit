@@ -9,8 +9,10 @@ from app.models.schemas import (
     AppSettings,
     EspansoStatus,
     FolderCreate,
+    FolderDeleteResult,
     FolderExport,
     FolderExportResult,
+    GitShortcutSyncDisable,
     GitShortcutSyncResult,
     GitShortcutSyncSource,
     GitShortcutSyncValidation,
@@ -98,6 +100,18 @@ def sync_git_shortcuts(service: AppSettingsService = Depends(get_settings_servic
         raise http_error(exc) from exc
 
 
+@router.post("/settings/git-sync/sources/{source_id}/disable", response_model=GitShortcutSyncResult)
+def disable_git_sync_source(
+    source_id: str,
+    payload: GitShortcutSyncDisable,
+    service: AppSettingsService = Depends(get_settings_service),
+) -> GitShortcutSyncResult:
+    try:
+        return service.disable_git_sync_source(source_id, payload.remove_shortcuts)
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
 @router.get("/shortcuts", response_model=list[Shortcut])
 def shortcuts(service: ShortcutService = Depends(get_service)) -> list[Shortcut]:
     try:
@@ -118,6 +132,26 @@ def folders(service: ShortcutService = Depends(get_service)) -> list[str]:
 def create_folder(payload: FolderCreate, service: ShortcutService = Depends(get_service)) -> dict[str, str]:
     try:
         return {"folder": service.create_folder(payload.folder)}
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.delete("/folders/{folder_path:path}", response_model=FolderDeleteResult)
+def delete_folder(
+    folder_path: str,
+    shortcut_service: ShortcutService = Depends(get_service),
+    settings_service: AppSettingsService = Depends(get_settings_service),
+) -> FolderDeleteResult:
+    try:
+        synced_sources = settings_service.enabled_sources_for_folder(folder_path)
+        if synced_sources:
+            raise AppError(
+                "FOLDER_SYNC_ENABLED",
+                "This folder is managed by GitHub sync. Disable the sync source before deleting the folder.",
+                [{"id": source.id, "repo_url": source.repo_url, "folder": source.folder} for source in synced_sources],
+                422,
+            )
+        return shortcut_service.delete_folder(folder_path)
     except AppError as exc:
         raise http_error(exc) from exc
 

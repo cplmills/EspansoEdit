@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
@@ -16,6 +17,7 @@ from app.models.schemas import (
     MacOSTextReplacementSkip,
     FolderExport,
     FolderExportResult,
+    FolderDeleteResult,
     Shortcut,
     ShortcutCreate,
     ShortcutMove,
@@ -224,6 +226,27 @@ class ShortcutService:
             raise AppError("PATH_NOT_ALLOWED", "Invalid target folder.", status_code=403)
         target.mkdir(parents=True, exist_ok=True)
         return relative
+
+    def delete_folder(self, folder: str) -> FolderDeleteResult:
+        folder_label = self._folder_label(folder)
+        if folder_label == "Root":
+            raise AppError("INVALID_FOLDER", "The Root folder cannot be deleted.", status_code=422)
+        target = self._folder_path(folder)
+        if not target.exists() or not target.is_dir():
+            raise AppError("FOLDER_NOT_FOUND", "Folder was not found.", status_code=404)
+
+        removed_files = [path for path in target.rglob("*") if path.is_file()]
+        backup = self._backup_service()
+        for path in removed_files:
+            backup.backup_file(path, "folder-delete")
+        shutil.rmtree(target)
+        reload_result = self.reloader.reload()
+        return FolderDeleteResult(
+            folder=folder_label,
+            deleted_path=str(target),
+            removed_file_count=len(removed_files),
+            reload=reload_result.to_dict(),
+        )
 
     def export_folder(self, payload: FolderExport) -> FolderExportResult:
         folder = self._folder_label(payload.folder)

@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -93,6 +93,14 @@ type FolderExportResult = {
   saved_path: string | null;
 };
 
+type FolderDeleteResult = {
+  success: boolean;
+  folder: string;
+  deleted_path: string;
+  removed_file_count: number;
+  reload: Record<string, unknown> | null;
+};
+
 type GitSyncFile = {
   file_path: string;
   file_sha: string | null;
@@ -103,6 +111,7 @@ type GitSyncSource = {
   id: string;
   enabled: boolean;
   repo_url: string | null;
+  access_token: string | null;
   branch: string | null;
   folder: string;
   file_paths: string[];
@@ -429,6 +438,32 @@ function App() {
     }
   };
 
+  const deleteFolder = async (folder: string) => {
+    const syncedSources = enabledSyncSourcesForFolder(settings, folder);
+    if (syncedSources.length > 0) {
+      const openSettings = window.confirm("This folder is managed by GitHub sync. Disable the sync source before deleting it. Open Settings now?");
+      if (openSettings) setView("settings");
+      return;
+    }
+    if (!window.confirm(`Delete folder ${folder} and all shortcuts inside it?`)) return;
+    setNotice("");
+    setError(null);
+    try {
+      const result = await api<FolderDeleteResult>(`/api/folders/${encodeFolderPath(folder)}`, { method: "DELETE" });
+      if (selectedFolder === folder) setSelectedFolder("All");
+      setNotice(`Deleted ${result.folder}. Removed ${result.removed_file_count} file${result.removed_file_count === 1 ? "" : "s"}. ${reloadMessage(result.reload)}`);
+      await refresh();
+    } catch (err) {
+      const normalized = normalizeError(err);
+      if (normalized.code === "FOLDER_SYNC_ENABLED") {
+        const openSettings = window.confirm(`${normalized.message} Open Settings now?`);
+        if (openSettings) setView("settings");
+        return;
+      }
+      setError(normalized);
+    }
+  };
+
   const exportFolder = async (folder: string) => {
     if (folder === "All") {
       setError({ code: "FOLDER_REQUIRED", message: "Select a folder before exporting." });
@@ -631,6 +666,25 @@ function App() {
     }
   };
 
+  const disableGitSyncSource = async (source: GitSyncSource, removeShortcuts: boolean) => {
+    setNotice("");
+    setError(null);
+    try {
+      const result = await api<GitSyncResult>(`/api/settings/git-sync/sources/${encodeURIComponent(source.id)}/disable`, {
+        method: "POST",
+        body: JSON.stringify({ remove_shortcuts: removeShortcuts })
+      });
+      if (result.settings) setSettings(result.settings);
+      const cleanup = removeShortcuts ? ` Removed ${result.target_paths.length} synced file${result.target_paths.length === 1 ? "" : "s"}.` : " Installed shortcuts were kept.";
+      setNotice(`GitHub sync disabled for ${source.repo_url ?? "repository"}.${cleanup}${result.reload ? ` ${reloadMessage(result.reload)}` : ""}`);
+      await refresh();
+      return result;
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
   useEffect(() => {
     let active = true;
     api<GitSyncResult>("/api/settings/git-sync/sync", { method: "POST" })
@@ -681,6 +735,8 @@ function App() {
                 onToggle={() => setFoldersCollapsed((value) => !value)}
                 onSelect={setSelectedFolder}
                 onDropShortcut={dropShortcut}
+                onDeleteFolder={deleteFolder}
+                isSyncedFolder={(folder) => enabledSyncSourcesForFolder(settings, folder).length > 0}
               />
             )}
           </>
@@ -716,6 +772,7 @@ function App() {
             onSave={saveSettings}
             onValidateGitSync={validateGitSyncSettings}
             onSyncGit={syncGitShortcuts}
+            onDisableGitSyncSource={disableGitSyncSource}
           />
         )}
         {view === "config" && <ConfigView config={config} />}
@@ -1026,10 +1083,12 @@ function FolderRail(props: {
   onToggle: () => void;
   onSelect: (folder: string) => void;
   onDropShortcut: (shortcutId: string, folder: string) => void;
+  onDeleteFolder: (folder: string) => void;
+  isSyncedFolder: (folder: string) => boolean;
 }) {
   const totalCount = props.folders.reduce((sum, folder) => sum + folder.count, 0);
 
-  const dropOnFolder = (event: React.DragEvent<HTMLButtonElement>, folder: string) => {
+  const dropOnFolder = (event: React.DragEvent<HTMLDivElement>, folder: string) => {
     event.preventDefault();
     const shortcutId = event.dataTransfer.getData("text/plain");
     if (shortcutId) props.onDropShortcut(shortcutId, folder);
@@ -1042,18 +1101,29 @@ function FolderRail(props: {
           <span>All</span>
           <strong>{totalCount}</strong>
         </button>
-        {props.folders.map((folder) => (
-          <button
-            key={folder.name}
-            className={props.selectedFolder === folder.name ? "active" : ""}
-            onClick={() => props.onSelect(folder.name)}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => dropOnFolder(event, folder.name)}
-          >
-            <span>{folder.name}</span>
-            <strong>{folder.count}</strong>
-          </button>
-        ))}
+        {props.folders.map((folder) => {
+          const isSynced = props.isSyncedFolder(folder.name);
+          return (
+            <div
+              key={folder.name}
+              className={`folderRailItem ${props.selectedFolder === folder.name ? "active" : ""}`}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => dropOnFolder(event, folder.name)}
+            >
+              <button className="folderSelect" onClick={() => props.onSelect(folder.name)}>
+                <span>{folder.name}</span>
+                <strong>{folder.count}</strong>
+              </button>
+              <IconButton
+                className="folderDeleteButton"
+                label={isSynced ? `Disable sync before deleting ${folder.name}` : `Delete ${folder.name}`}
+                disabled={false}
+                onClick={() => props.onDeleteFolder(folder.name)}
+                icon={<TrashIcon />}
+              />
+            </div>
+          );
+        })}
       </div>
     </SidebarSection>
   );
@@ -1359,10 +1429,29 @@ function LabelWithInfo({ text, info }: { text: string; info: string }) {
   );
 }
 
-function InfoButton({ text }: { text: string }) {
+function InfoButton({ text, linkUrl, linkLabel }: { text: string; linkUrl?: string; linkLabel?: string }) {
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const hideTimer = useRef<number | null>(null);
+
+  const clearHideTimer = () => {
+    if (hideTimer.current !== null) {
+      window.clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  };
+
+  const scheduleHide = () => {
+    clearHideTimer();
+    hideTimer.current = window.setTimeout(() => {
+      setPosition(null);
+      hideTimer.current = null;
+    }, 250);
+  };
+
+  useEffect(() => clearHideTimer, []);
 
   const show = (target: HTMLElement) => {
+    clearHideTimer();
     const rect = target.getBoundingClientRect();
     const tooltipWidth = Math.min(320, window.innerWidth - 32);
     const left = Math.min(Math.max(16, rect.left + rect.width / 2 - tooltipWidth / 2), window.innerWidth - tooltipWidth - 16);
@@ -1371,24 +1460,36 @@ function InfoButton({ text }: { text: string }) {
   };
 
   return (
-    <>
+    <span className="infoButtonWrap" onMouseLeave={scheduleHide}>
       <button
         className="infoButton"
         type="button"
         aria-label={text}
-        onBlur={() => setPosition(null)}
+        onBlur={scheduleHide}
         onFocus={(event) => show(event.currentTarget)}
         onMouseEnter={(event) => show(event.currentTarget)}
-        onMouseLeave={() => setPosition(null)}
       >
         i
       </button>
       {position && (
-        <span className="tooltip visibleTooltip" role="tooltip" style={{ left: position.left, top: position.top }}>
+        <span
+          className="tooltip visibleTooltip"
+          role="tooltip"
+          style={{ left: position.left, top: position.top }}
+          onBlur={scheduleHide}
+          onFocus={clearHideTimer}
+          onMouseEnter={clearHideTimer}
+          onMouseLeave={scheduleHide}
+        >
           {text}
+          {linkUrl && (
+            <a href={linkUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+              {linkLabel ?? linkUrl}
+            </a>
+          )}
         </span>
       )}
-    </>
+    </span>
   );
 }
 
@@ -1799,6 +1900,7 @@ function SettingsView(props: {
   onSave: (settings: AppSettings) => Promise<AppSettings>;
   onValidateGitSync: (source: GitSyncSource) => Promise<GitSyncValidation>;
   onSyncGit: () => Promise<GitSyncResult>;
+  onDisableGitSyncSource: (source: GitSyncSource, removeShortcuts: boolean) => Promise<GitSyncResult>;
 }) {
   const [gitSync, setGitSync] = useState<GitSyncSettings>(() => props.settings?.git_sync ?? defaultGitSyncSettings());
   const [theme, setTheme] = useState<ThemeMode>(() => props.settings?.theme ?? "dark");
@@ -1903,6 +2005,31 @@ function SettingsView(props: {
     }
   };
 
+  const toggleSourceEnabled = async (source: GitSyncSource, checked: boolean) => {
+    if (checked) {
+      updateSource(source.id, { enabled: true });
+      return;
+    }
+    const savedSource = props.settings?.git_sync.sources.find((item) => item.id === source.id);
+    if (!savedSource?.enabled) {
+      updateSource(source.id, { enabled: false });
+      return;
+    }
+    const disable = window.confirm("Disable GitHub sync for this repository?");
+    if (!disable) return;
+    const removeShortcuts = window.confirm("Remove the shortcuts that were installed from this GitHub sync source? Choose Cancel to keep them locally.");
+    setSyncing(true);
+    setLocalError("");
+    try {
+      const result = await props.onDisableGitSyncSource(source, removeShortcuts);
+      if (result.settings) setGitSync(result.settings.git_sync);
+    } catch (err) {
+      setLocalError(normalizeError(err).message);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <section>
       <div className="toolbar">
@@ -1967,6 +2094,22 @@ function SettingsView(props: {
                     />
                   </label>
                   <label>
+                    <span className="labelWithInfo">
+                      Access token
+                      <InfoButton
+                        text="Private repositories need a fine-grained GitHub personal access token with Contents set to Read-only for the selected repository."
+                        linkUrl="https://github.com/settings/personal-access-tokens/new"
+                        linkLabel="Create token"
+                      />
+                    </span>
+                    <input
+                      type="password"
+                      value={source.access_token ?? ""}
+                      onChange={(event) => updateSource(source.id, { access_token: event.target.value })}
+                      placeholder="Required for private repositories"
+                    />
+                  </label>
+                  <label>
                     Destination folder
                     <FolderInput value={source.folder || "GitHub"} folders={props.folders} onChange={(folder) => updateSource(source.id, { folder })} />
                   </label>
@@ -1983,7 +2126,7 @@ function SettingsView(props: {
                 </div>
                 <div className="optionGrid">
                   <label className="checkRow">
-                    <input type="checkbox" checked={source.enabled} onChange={(event) => updateSource(source.id, { enabled: event.target.checked })} />
+                    <input type="checkbox" checked={source.enabled} onChange={(event) => toggleSourceEnabled(source, event.target.checked)} />
                     <span>Enabled</span>
                     <InfoButton text="Includes this repository when GitHub shortcut sync runs." />
                   </label>
@@ -2081,6 +2224,20 @@ function reloadMessage(reload: Record<string, unknown> | null) {
   const command = reload?.command;
   if (Array.isArray(command) && command.length === 0) return "Espanso will pick it up from its config watcher.";
   return "Espanso reload completed.";
+}
+
+function enabledSyncSourcesForFolder(settings: AppSettings | null, folder: string) {
+  const target = folderKey(folder);
+  return settings?.git_sync.sources.filter((source) => source.enabled && folderKey(source.folder) === target) ?? [];
+}
+
+function folderKey(folder: string | null | undefined) {
+  const cleaned = (folder ?? "").trim().replace(/^\/+|\/+$/g, "");
+  return !cleaned || cleaned.toLowerCase() === "root" ? "" : cleaned;
+}
+
+function encodeFolderPath(folder: string) {
+  return folder.split("/").map(encodeURIComponent).join("/");
 }
 
 function downloadTextFile(filename: string, content: string, type: string) {
@@ -2269,6 +2426,7 @@ function defaultGitSyncSource(): GitSyncSource {
     id: `source-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     enabled: true,
     repo_url: "",
+    access_token: "",
     branch: "",
     folder: "GitHub",
     file_paths: [],
@@ -2290,6 +2448,7 @@ function normalizeGitSyncSource(source: GitSyncSource): GitSyncSource {
   return {
     ...source,
     repo_url: source.repo_url?.trim() || null,
+    access_token: source.access_token?.trim() || null,
     branch: source.branch?.trim() || null,
     folder: source.folder?.trim() || "GitHub",
     file_paths: source.file_paths.map((path) => path.trim()).filter(Boolean)

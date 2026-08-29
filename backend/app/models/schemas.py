@@ -139,6 +139,7 @@ class GitShortcutSyncSource(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     enabled: bool = False
     repo_url: str | None = None
+    access_token: str | None = None
     branch: str | None = None
     folder: str = "GitHub"
     file_paths: list[str] = Field(default_factory=list)
@@ -185,6 +186,10 @@ class GitShortcutSyncSourceResult(BaseModel):
     message: str = ""
 
 
+class GitShortcutSyncDisable(BaseModel):
+    remove_shortcuts: bool = False
+
+
 class GitShortcutSyncResult(ApiResult):
     changed: bool = False
     installed: bool = False
@@ -199,6 +204,13 @@ class GitShortcutSyncResult(ApiResult):
 
 class FolderCreate(BaseModel):
     folder: str
+
+
+class FolderDeleteResult(ApiResult):
+    folder: str
+    deleted_path: str
+    removed_file_count: int = 0
+    reload: dict[str, Any] | None = None
 
 
 class FolderExport(BaseModel):
