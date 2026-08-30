@@ -1,22 +1,26 @@
 from __future__ import annotations
 
 import ssl
+from base64 import b64decode
 from pathlib import Path
 from typing import Any
 from urllib.request import Request
 
 import pytest
 
-from app.models.schemas import GitShortcutSyncSettings, GitShortcutSyncSource, SettingsUpdate
+from app.models.schemas import BackupLocationMove, BackupSettings, GitShortcutSyncSettings, GitShortcutSyncSource, SettingsUpdate
+from app.services.backup_service import BackupService
 from app.services.settings_service import AppSettingsService
 from app.utils.errors import AppError
 from conftest import FakeDiscovery, FakeReloader
 
 
 class FakeSettingsService(AppSettingsService):
-    def __init__(self, root: Path, repos: dict[str, dict[str, tuple[str, str]]]) -> None:
+    def __init__(self, root: Path, repos: dict[str, dict[str, tuple[str, str]]], writable_repos: set[str] | None = None) -> None:
         super().__init__(FakeDiscovery(root), FakeReloader())
         self.repos = repos
+        self.writable_repos = writable_repos or set()
+        self.upload_count = 0
 
     def _github_json(self, path: str, source: GitShortcutSyncSource | None = None) -> Any:
         parts = path.split("/")
@@ -25,7 +29,9 @@ class FakeSettingsService(AppSettingsService):
             if repo_key not in self.repos:
                 raise AppError("GITHUB_NOT_FOUND", "Not found.", status_code=404)
             if len(parts) == 4:
-                return {"default_branch": "main"}
+                return {"default_branch": "main", "permissions": {"pull": True, "push": repo_key in self.writable_repos}}
+            if path == f"/repos/{repo_key}/branches?per_page=100":
+                return [{"name": "main"}, {"name": "develop"}]
             if path == f"/repos/{repo_key}/git/trees/main?recursive=1":
                 return {"tree": [{"type": "blob", "path": file_path} for file_path in self.repos[repo_key]]}
             contents_prefix = f"/repos/{repo_key}/contents/"
@@ -36,6 +42,28 @@ class FakeSettingsService(AppSettingsService):
                 _, sha = self.repos[repo_key][file_path]
                 return {"type": "file", "download_url": f"https://raw.test/{repo_key}/{file_path}", "sha": sha}
         raise AppError("GITHUB_NOT_FOUND", "Not found.", status_code=404)
+
+    def _github_request_json(
+        self,
+        method: str,
+        path: str,
+        source: GitShortcutSyncSource | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> Any:
+        if method != "PUT" or payload is None:
+            return self._github_json(path, source)
+        parts = path.split("/")
+        repo_key = f"{parts[2]}/{parts[3]}"
+        if repo_key not in self.writable_repos:
+            raise AppError("GIT_SYNC_UPLOAD_FORBIDDEN", "Forbidden.", status_code=403)
+        file_path = path.split(f"/repos/{repo_key}/contents/", 1)[1]
+        if payload.get("sha") == "0" * 40:
+            raise AppError("GIT_SYNC_UPLOAD_CONFLICT", "Dry-run conflict.", status_code=409)
+        content = b64decode(payload["content"]).decode("utf-8")
+        self.upload_count += 1
+        sha = f"sha-upload-{self.upload_count}"
+        self.repos[repo_key][file_path] = (content, sha)
+        return {"content": {"sha": sha}}
 
     def _download_url(self, url: str, source: GitShortcutSyncSource | None = None) -> str:
         file_key = url.removeprefix("https://raw.test/")
@@ -85,6 +113,38 @@ def test_saving_settings_preserves_theme(espanso_root: Path) -> None:
     assert service.get_settings().theme == "light"
 
 
+def test_saving_git_sync_settings_preserves_source_name(espanso_root: Path) -> None:
+    service = FakeSettingsService(
+        espanso_root,
+        {
+            "acme/shortcuts": {
+                "base.yml": ('matches:\n  - trigger: ":hello"\n    replace: "Hello"\n', "sha-1"),
+            }
+        },
+    )
+
+    settings = service.update_settings(
+        SettingsUpdate(
+            git_sync=GitShortcutSyncSettings(
+                enabled=True,
+                sources=[
+                    GitShortcutSyncSource(
+                        id="source-1",
+                        name="Shared team snippets",
+                        enabled=True,
+                        repo_url="https://github.com/acme/shortcuts",
+                        folder="Shared",
+                        file_paths=["base.yml"],
+                    )
+                ],
+            )
+        )
+    )
+
+    assert settings.git_sync.sources[0].name == "Shared team snippets"
+    assert service.get_settings().git_sync.sources[0].name == "Shared team snippets"
+
+
 def test_saving_git_sync_settings_preserves_access_token(espanso_root: Path) -> None:
     service = FakeSettingsService(
         espanso_root,
@@ -114,6 +174,52 @@ def test_saving_git_sync_settings_preserves_access_token(espanso_root: Path) -> 
     )
 
     assert settings.git_sync.sources[0].access_token == "github_pat_test"
+
+
+def test_validating_git_sync_detects_write_access(espanso_root: Path) -> None:
+    service = FakeSettingsService(
+        espanso_root,
+        {
+            "acme/writable-shortcuts": {
+                "base.yml": ('matches:\n  - trigger: ":hello"\n    replace: "Hello"\n', "sha-1"),
+            }
+        },
+        writable_repos={"acme/writable-shortcuts"},
+    )
+
+    validation = service.validate_git_sync(
+        GitShortcutSyncSource(
+            repo_url="https://github.com/acme/writable-shortcuts",
+            access_token="github_pat_test",
+            file_paths=["base.yml"],
+        )
+    )
+
+    assert validation.shortcut_file_found is True
+    assert validation.write_access is True
+    assert validation.branches == ["develop", "main"]
+
+
+def test_validating_git_sync_without_write_access_is_read_only(espanso_root: Path) -> None:
+    service = FakeSettingsService(
+        espanso_root,
+        {
+            "acme/read-only-shortcuts": {
+                "base.yml": ('matches:\n  - trigger: ":hello"\n    replace: "Hello"\n', "sha-1"),
+            }
+        },
+        writable_repos={"acme/read-only-shortcuts"},
+    )
+
+    validation = service.validate_git_sync(
+        GitShortcutSyncSource(
+            repo_url="https://github.com/acme/read-only-shortcuts",
+            file_paths=["base.yml"],
+        )
+    )
+
+    assert validation.shortcut_file_found is True
+    assert validation.write_access is False
 
 
 def test_github_requests_use_configured_ssl_context(monkeypatch: pytest.MonkeyPatch, espanso_root: Path) -> None:
@@ -217,6 +323,49 @@ def test_syncing_git_shortcuts_installs_multiple_files_and_repos(espanso_root: P
     assert (espanso_root / "match" / "Beta" / "github-beta-snippets-base-yml.yml").exists()
     assert second.changed is False
     assert second.installed is False
+
+
+def test_syncing_git_shortcuts_uploads_local_changes_when_token_is_writable(espanso_root: Path) -> None:
+    service = FakeSettingsService(
+        espanso_root,
+        {
+            "acme/shortcuts": {
+                "base.yml": ('matches:\n  - trigger: ":hello"\n    replace: "Hello"\n', "sha-1"),
+            }
+        },
+        writable_repos={"acme/shortcuts"},
+    )
+    service.update_settings(
+        SettingsUpdate(
+            git_sync=GitShortcutSyncSettings(
+                enabled=True,
+                sources=[
+                    GitShortcutSyncSource(
+                        id="source-1",
+                        enabled=True,
+                        repo_url="https://github.com/acme/shortcuts",
+                        access_token="github_pat_test",
+                        folder="Shared",
+                        file_paths=["base.yml"],
+                    )
+                ],
+            )
+        )
+    )
+    first = service.sync_git_shortcuts()
+    installed = Path(first.target_paths[0])
+    installed.write_text('matches:\n  - trigger: ":hello"\n    replace: "Hello"\n  - trigger: ":local"\n    replace: "Local"\n', encoding="utf-8")
+
+    second = service.sync_git_shortcuts()
+    settings = service.get_settings()
+
+    assert second.changed is True
+    assert second.installed is False
+    assert second.uploaded is True
+    assert second.uploaded_paths == ["base.yml"]
+    assert service.repos["acme/shortcuts"]["base.yml"][0] == installed.read_text(encoding="utf-8")
+    assert settings.git_sync.sources[0].last_file_shas["base.yml"] == "sha-upload-1"
+    assert "Uploaded 1 file to GitHub." in settings.git_sync.sources[0].last_sync_message
 
 
 def test_finding_enabled_sources_for_folder(espanso_root: Path) -> None:
@@ -364,3 +513,56 @@ def test_migrating_legacy_single_git_sync_settings(espanso_root: Path) -> None:
     assert len(settings.git_sync.sources) == 1
     assert settings.git_sync.sources[0].repo_url == "https://github.com/acme/shortcuts"
     assert settings.git_sync.sources[0].file_paths == ["base.yml"]
+
+
+def test_backup_settings_can_move_and_clear_backups(espanso_root: Path, tmp_path: Path) -> None:
+    service = FakeSettingsService(espanso_root, {})
+    original = espanso_root / "match" / "base.yml"
+    original.write_text('matches:\n  - trigger: ":hello"\n    replace: "Hello"\n', encoding="utf-8")
+    BackupService(service.backup_root()).backup_file(original, "test")
+    destination = tmp_path / "moved-backups"
+
+    settings = service.move_backup_location(BackupLocationMove(location=str(destination)))
+    removed = service.clear_backups()
+
+    assert settings.location == str(destination.resolve())
+    assert destination.exists()
+    assert removed.removed_count == 1
+    assert service.list_backups() == []
+
+
+def test_backup_frequency_can_skip_repeated_or_automatic_backups(espanso_root: Path) -> None:
+    original = espanso_root / "match" / "base.yml"
+    original.write_text('matches:\n  - trigger: ":hello"\n    replace: "Hello"\n', encoding="utf-8")
+    daily_root = espanso_root / "daily-backups"
+    manual_root = espanso_root / "manual-backups"
+
+    BackupService(daily_root, "daily").backup_file(original, "first")
+    BackupService(daily_root, "daily").backup_file(original, "second")
+    BackupService(manual_root, "manual").backup_file(original, "manual")
+
+    assert len(BackupService(daily_root).list_backups()) == 1
+    assert BackupService(manual_root).list_backups() == []
+
+
+def test_syncing_backups_to_github_uploads_backup_files(espanso_root: Path) -> None:
+    service = FakeSettingsService(espanso_root, {"acme/backups": {}}, writable_repos={"acme/backups"})
+    original = espanso_root / "match" / "base.yml"
+    original.write_text('matches:\n  - trigger: ":hello"\n    replace: "Hello"\n', encoding="utf-8")
+    BackupService(service.backup_root()).backup_file(original, "test")
+    service.update_backup_settings(
+        BackupSettings(
+            github_enabled=True,
+            github_repo_url="https://github.com/acme/backups",
+            github_access_token="github_pat_test",
+            github_path="snapshots",
+        )
+    )
+
+    result = service.sync_backups_to_github()
+
+    assert result.uploaded_count == 2
+    assert result.repo == "acme/backups"
+    assert result.branch == "main"
+    assert any(path.endswith("/metadata.json") for path in service.repos["acme/backups"])
+    assert any(path.endswith("/base.yml") for path in service.repos["acme/backups"])

@@ -5,7 +5,12 @@ from pathlib import Path
 from fastapi import APIRouter, Depends
 
 from app.models.schemas import (
+    BackupClearResult,
+    BackupGitHubValidation,
     BackupItem,
+    BackupLocationMove,
+    BackupSettings,
+    BackupSyncResult,
     AppSettings,
     EspansoStatus,
     FolderCreate,
@@ -283,9 +288,49 @@ def validate(service: ShortcutService = Depends(get_service)) -> ValidationResul
 
 
 @router.get("/backups", response_model=list[BackupItem])
-def backups(service: ShortcutService = Depends(get_service)) -> list[BackupItem]:
+def backups(service: AppSettingsService = Depends(get_settings_service)) -> list[BackupItem]:
     try:
         return service.list_backups()
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.put("/backups/settings", response_model=BackupSettings)
+def update_backup_settings(payload: BackupSettings, service: AppSettingsService = Depends(get_settings_service)) -> BackupSettings:
+    try:
+        return service.update_backup_settings(payload)
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/backups/move", response_model=BackupSettings)
+def move_backup_location(payload: BackupLocationMove, service: AppSettingsService = Depends(get_settings_service)) -> BackupSettings:
+    try:
+        return service.move_backup_location(payload)
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/backups/clear", response_model=BackupClearResult)
+def clear_backups(service: AppSettingsService = Depends(get_settings_service)) -> BackupClearResult:
+    try:
+        return service.clear_backups()
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/backups/sync", response_model=BackupSyncResult)
+def sync_backups(service: AppSettingsService = Depends(get_settings_service)) -> BackupSyncResult:
+    try:
+        return service.sync_backups_to_github()
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.post("/backups/github/validate", response_model=BackupGitHubValidation)
+def validate_backup_github(payload: BackupSettings, service: AppSettingsService = Depends(get_settings_service)) -> BackupGitHubValidation:
+    try:
+        return service.validate_backup_github(payload)
     except AppError as exc:
         raise http_error(exc) from exc
 

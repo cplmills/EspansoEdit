@@ -326,6 +326,42 @@ textarea::placeholder {
   white-space: nowrap;
 }
 
+.folderRail .folderNameWithSync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.folderRail .folderNameText {
+  min-width: 0;
+}
+
+.folderRail .folderSyncIcon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  overflow: visible;
+}
+
+.folderRail .folderSyncIcon.one_way {
+  background: rgba(215, 155, 51, 0.18);
+  color: #f0be67;
+}
+
+.folderRail .folderSyncIcon.two_way {
+  background: rgba(82, 191, 151, 0.16);
+  color: #72dfba;
+}
+
 .row {
   display: grid;
   grid-template-columns: minmax(120px, 0.75fr) minmax(180px, 1.3fr) minmax(150px, 0.9fr) 110px 220px;
@@ -548,7 +584,8 @@ textarea::placeholder {
 }
 
 .packageInstall input,
-.settingsPanel input {
+.settingsPanel input,
+.settingsPanel select {
   width: 100%;
   border: 1px solid #48453d;
   border-radius: 6px;
@@ -560,6 +597,7 @@ textarea::placeholder {
 
 .packageInstall input:disabled,
 .settingsPanel input:disabled,
+.settingsPanel select:disabled,
 .modal input:disabled,
 .modal textarea:disabled,
 .modal select:disabled {
@@ -572,6 +610,176 @@ textarea::placeholder {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.settingsColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px;
+}
+
+.backupSettingsPanel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.backupSettingsPanel.collapsed {
+  gap: 0;
+  padding-bottom: 0;
+}
+
+.collapsibleHeader {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 42px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #f1eee6;
+  font-weight: 800;
+  text-align: left;
+}
+
+.collapsibleHeader:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+}
+
+.collapsibleMeta {
+  min-width: 0;
+  color: #a8a194;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapsibleChevron {
+  display: grid;
+  place-items: center;
+  color: #a8a194;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.backupSettingsContent {
+  display: grid;
+  gap: 14px;
+}
+
+.backupGeneralGroup {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  align-items: end;
+  gap: 14px;
+}
+
+.backupLocationMeta {
+  display: grid;
+  justify-content: stretch;
+  gap: 4px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 1px solid #3b3932;
+  border-radius: 6px;
+  background: #1d1c18;
+}
+
+.backupLocationMeta span,
+.backupLocationMeta strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backupLocationMeta span {
+  color: #a8a194;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.backupGitHubGroup {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #3b3932;
+  border-radius: 8px;
+  background: #201f1b;
+}
+
+.backupGroupHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.backupGithubGrid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(160px, 220px);
+  gap: 14px;
+  align-items: start;
+}
+
+.backupSecondRow {
+  grid-column: span 1;
+}
+
+.backupSettingsPanel label:not(.checkboxLabel) {
+  display: grid;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.backupSettingsPanel input,
+.backupSettingsPanel select {
+  width: 100%;
+  border: 1px solid #48453d;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-weight: 400;
+  background: #1d1c18;
+  color: #f1eee6;
+}
+
+.settingsColumn {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.buttonRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #3b3932;
+  border-radius: 6px;
+  background: #1d1c18;
+}
+
+.checkboxLabel input {
+  width: auto;
 }
 
 .syncStatus,
@@ -595,6 +803,12 @@ textarea::placeholder {
   justify-content: space-between;
 }
 
+.settingsMeta.backupLocationMeta {
+  display: grid;
+  align-items: center;
+  justify-content: stretch;
+}
+
 .syncSourceList {
   display: grid;
   gap: 14px;
@@ -609,6 +823,12 @@ textarea::placeholder {
   background: #201f1b;
 }
 
+.syncSourceCard h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .panel pre,
 .alert pre {
   overflow: auto;
@@ -620,22 +840,36 @@ textarea::placeholder {
   border: 1px solid #3b3932;
 }
 
-.empty,
-.loading {
+.empty {
   padding: 18px;
   color: #a8a194;
 }
 
-.alertStack {
+.statusOverlay {
   position: fixed;
   top: 14px;
   left: 50%;
-  z-index: 30;
+  z-index: 1000;
   display: grid;
   gap: 10px;
   width: min(860px, calc(100vw - 32px));
   transform: translateX(-50%);
+  contain: layout paint;
   pointer-events: none;
+}
+
+.loading {
+  justify-self: end;
+  width: max-content;
+  max-width: 100%;
+  margin: 0;
+  border: 1px solid #4a4740;
+  border-radius: 999px;
+  background: #24231f;
+  color: #f1eee6;
+  padding: 8px 12px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+  pointer-events: auto;
 }
 
 .alert {
@@ -658,14 +892,14 @@ textarea::placeholder {
 }
 
 .alert.success {
-  background: rgba(82, 191, 151, 0.16);
-  border: 1px solid rgba(114, 223, 186, 0.35);
+  background: #20382f;
+  border: 1px solid #4fa987;
   color: #dff9ee;
 }
 
 .alert.error {
-  background: rgba(205, 72, 67, 0.18);
-  border: 1px solid rgba(255, 132, 126, 0.36);
+  background: #442724;
+  border: 1px solid #c86962;
   color: #ffe4df;
 }
 
@@ -1055,6 +1289,9 @@ textarea::placeholder {
 :root[data-theme="light"] .search,
 :root[data-theme="light"] .packageInstall input,
 :root[data-theme="light"] .settingsPanel input,
+:root[data-theme="light"] .settingsPanel select,
+:root[data-theme="light"] .backupSettingsPanel input,
+:root[data-theme="light"] .backupSettingsPanel select,
 :root[data-theme="light"] .modal input,
 :root[data-theme="light"] .modal textarea,
 :root[data-theme="light"] .modal select {
@@ -1099,6 +1336,19 @@ textarea::placeholder {
   color: #1d2430;
 }
 
+:root[data-theme="light"] .collapsibleHeader {
+  color: #1d2430;
+}
+
+:root[data-theme="light"] .collapsibleHeader:hover:not(:disabled) {
+  background: transparent;
+}
+
+:root[data-theme="light"] .collapsibleMeta,
+:root[data-theme="light"] .collapsibleChevron {
+  color: #5b6876;
+}
+
 :root[data-theme="light"] .sortIndicator {
   color: #166c5f;
 }
@@ -1115,8 +1365,11 @@ textarea::placeholder {
 :root[data-theme="light"] .bulkBar,
 :root[data-theme="light"] .syncStatus,
 :root[data-theme="light"] .syncSourceCard,
+:root[data-theme="light"] .backupGitHubGroup,
+:root[data-theme="light"] .backupLocationMeta,
 :root[data-theme="light"] .formBuilder,
-:root[data-theme="light"] .checkRow {
+:root[data-theme="light"] .checkRow,
+:root[data-theme="light"] .checkboxLabel {
   background: #f8fafb;
   border-color: #d7dee7;
 }
@@ -1243,8 +1496,19 @@ textarea::placeholder {
   }
 
   .packageInstallGrid,
-  .settingsGrid {
+  .settingsGrid,
+  .settingsColumns {
     grid-template-columns: 1fr;
+  }
+
+  .collapsibleHeader,
+  .backupGeneralGroup,
+  .backupGithubGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .collapsibleMeta {
+    text-align: left;
   }
 
   .fieldRow,

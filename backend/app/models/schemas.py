@@ -137,13 +137,16 @@ class GitShortcutSyncFile(BaseModel):
 
 class GitShortcutSyncSource(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
+    name: str | None = None
     enabled: bool = False
     repo_url: str | None = None
     access_token: str | None = None
     branch: str | None = None
     folder: str = "GitHub"
+    write_access: bool = False
     file_paths: list[str] = Field(default_factory=list)
     last_file_shas: dict[str, str] = Field(default_factory=dict)
+    last_local_hashes: dict[str, str] = Field(default_factory=dict)
     installed_files: dict[str, str] = Field(default_factory=dict)
     last_synced_at: str | None = None
     last_sync_message: str | None = None
@@ -154,22 +157,38 @@ class GitShortcutSyncSettings(BaseModel):
     sources: list[GitShortcutSyncSource] = Field(default_factory=list)
 
 
+class BackupSettings(BaseModel):
+    location: str | None = None
+    frequency: Literal["always", "daily", "manual"] = "always"
+    github_enabled: bool = False
+    github_repo_url: str | None = None
+    github_access_token: str | None = None
+    github_branch: str | None = None
+    github_path: str = "espansoedit-backups"
+    last_synced_at: str | None = None
+    last_sync_message: str | None = None
+
+
 class AppSettings(BaseModel):
     theme: Literal["dark", "light"] = "dark"
     git_sync: GitShortcutSyncSettings = Field(default_factory=GitShortcutSyncSettings)
+    backup: BackupSettings = Field(default_factory=BackupSettings)
 
 
 class SettingsUpdate(BaseModel):
     theme: Literal["dark", "light"] = "dark"
     git_sync: GitShortcutSyncSettings
+    backup: BackupSettings = Field(default_factory=BackupSettings)
 
 
 class GitShortcutSyncValidation(ApiResult):
     source_id: str | None = None
     exists: bool = False
     shortcut_file_found: bool = False
+    write_access: bool = False
     repo: str | None = None
     branch: str | None = None
+    branches: list[str] = Field(default_factory=list)
     file_path: str | None = None
     file_sha: str | None = None
     files: list[GitShortcutSyncFile] = Field(default_factory=list)
@@ -181,7 +200,9 @@ class GitShortcutSyncSourceResult(BaseModel):
     source_id: str
     changed: bool = False
     installed: bool = False
+    uploaded: bool = False
     target_paths: list[str] = Field(default_factory=list)
+    uploaded_paths: list[str] = Field(default_factory=list)
     validation: GitShortcutSyncValidation | None = None
     message: str = ""
 
@@ -193,13 +214,42 @@ class GitShortcutSyncDisable(BaseModel):
 class GitShortcutSyncResult(ApiResult):
     changed: bool = False
     installed: bool = False
+    uploaded: bool = False
     target_path: str | None = None
     target_paths: list[str] = Field(default_factory=list)
+    uploaded_paths: list[str] = Field(default_factory=list)
     validation: GitShortcutSyncValidation | None = None
     validations: list[GitShortcutSyncValidation] = Field(default_factory=list)
     source_results: list[GitShortcutSyncSourceResult] = Field(default_factory=list)
     settings: AppSettings | None = None
     reload: dict[str, Any] | None = None
+
+
+class BackupLocationMove(BaseModel):
+    location: str
+
+
+class BackupClearResult(ApiResult):
+    removed_count: int = 0
+
+
+class BackupSyncResult(ApiResult):
+    uploaded_count: int = 0
+    repo: str | None = None
+    branch: str | None = None
+    backup_path: str | None = None
+    last_synced_at: str | None = None
+    message: str = ""
+    settings: BackupSettings | None = None
+
+
+class BackupGitHubValidation(ApiResult):
+    exists: bool = False
+    write_access: bool = False
+    repo: str | None = None
+    branch: str | None = None
+    branches: list[str] = Field(default_factory=list)
+    message: str = ""
 
 
 class FolderCreate(BaseModel):

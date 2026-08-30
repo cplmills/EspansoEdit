@@ -30,6 +30,7 @@ from app.services.backup_service import BackupService
 from app.services.espanso_discovery import EspansoDiscoveryService, EspansoPaths
 from app.services.macos_text_replacement_importer import MacOSTextReplacementImportService
 from app.services.reloader import EspansoReloadService, ReloadResult
+from app.services.settings_service import AppSettingsService
 from app.services.yaml_service import YamlMatchService, case_insensitive_regex_for_trigger, normalize_newlines
 from app.utils.errors import AppError
 
@@ -831,10 +832,13 @@ class ShortcutService:
         return paths
 
     def _backup_service(self) -> BackupService:
-        paths = self._paths_or_error()
-        return BackupService(paths.config_path / "shortcut-manager-backups")
+        settings = AppSettingsService(self.discovery, self.reloader)
+        return BackupService(settings.backup_root(), settings.backup_frequency())
 
     def _managed_file_for_folder(self, folder: str | None) -> Path:
+        sync_target = AppSettingsService(self.discovery, self.reloader).writable_sync_target_for_folder(folder)
+        if sync_target:
+            return self._allowed_file(sync_target)
         paths = self._paths_or_error()
         relative = self._normalize_folder(folder)
         target_dir = paths.match_path if relative == "" else paths.match_path / relative
@@ -900,5 +904,9 @@ class ShortcutService:
         return candidate
 
     def _is_backup_path(self, path: Path) -> bool:
-        paths = self.discovery.discover()
-        return bool(paths.config_path and (paths.config_path / "shortcut-manager-backups").resolve() in path.resolve().parents)
+        try:
+            backup_root = AppSettingsService(self.discovery, self.reloader).backup_root().resolve()
+        except AppError:
+            paths = self.discovery.discover()
+            backup_root = (paths.config_path / "shortcut-manager-backups").resolve() if paths.config_path else None
+        return bool(backup_root and backup_root in path.resolve().parents)

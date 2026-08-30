@@ -75,6 +75,44 @@ def test_adding_shortcut_creates_managed_file_and_backup(service: ShortcutServic
     assert len(service.list_backups()) == 1
 
 
+def test_adding_shortcut_to_writable_synced_folder_uses_synced_file(service: ShortcutService, espanso_root: Path) -> None:
+    synced_file = write_match(espanso_root, "Shared/github-acme-shortcuts-base-yml.yml", 'matches:\n  - trigger: ":remote"\n    replace: "Remote"\n')
+    (espanso_root / "espansoedit-settings.json").write_text(
+        """
+{
+  "theme": "dark",
+  "git_sync": {
+    "enabled": true,
+    "sources": [
+      {
+        "id": "source-1",
+        "enabled": true,
+        "repo_url": "https://github.com/acme/shortcuts",
+        "access_token": "github_pat_test",
+        "branch": "main",
+        "folder": "Shared",
+        "write_access": true,
+        "file_paths": ["base.yml"],
+        "last_file_shas": {"base.yml": "sha-1"},
+        "last_local_hashes": {},
+        "installed_files": {"base.yml": "github-acme-shortcuts-base-yml.yml"},
+        "last_synced_at": null,
+        "last_sync_message": null
+      }
+    ]
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    service.add_shortcut(ShortcutCreate(trigger=":local", replace="Local", folder="Shared"))
+
+    synced_content = synced_file.read_text(encoding="utf-8")
+    assert ':local' in synced_content
+    assert not (espanso_root / "match" / "Shared" / "espanso-shortcut-manager.yml").exists()
+
+
 def test_adding_shortcut_with_common_options(service: ShortcutService, espanso_root: Path) -> None:
     shortcut, _ = service.add_shortcut(
         ShortcutCreate(

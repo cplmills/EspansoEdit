@@ -1,9 +1,11 @@
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 type View = "shortcuts" | "packages" | "settings" | "config" | "health" | "backups";
 type ThemeMode = "dark" | "light";
+type SyncMode = "none" | "one_way" | "two_way";
 type BrowserSaveResult = "saved" | "cancelled" | "unsupported";
 type BrowserDirectoryHandle = {
   getFileHandle: (name: string, options: { create: boolean }) => Promise<{
@@ -79,6 +81,46 @@ type Backup = {
   operation: string;
 };
 
+type BackupFrequency = "always" | "daily" | "manual";
+
+type BackupSettings = {
+  location: string | null;
+  frequency: BackupFrequency;
+  github_enabled: boolean;
+  github_repo_url: string | null;
+  github_access_token: string | null;
+  github_branch: string | null;
+  github_path: string;
+  last_synced_at: string | null;
+  last_sync_message: string | null;
+};
+
+type BackupClearResult = {
+  success: boolean;
+  removed_count: number;
+};
+
+type BackupSyncResult = {
+  success: boolean;
+  uploaded_count: number;
+  repo: string | null;
+  branch: string | null;
+  backup_path: string | null;
+  last_synced_at: string | null;
+  message: string;
+  settings: BackupSettings | null;
+};
+
+type BackupGitHubValidation = {
+  success: boolean;
+  exists: boolean;
+  write_access: boolean;
+  repo: string | null;
+  branch: string | null;
+  branches: string[];
+  message: string;
+};
+
 type ConfigPayload = {
   status: Status;
   files: { path: string; file: string; content: string }[];
@@ -109,13 +151,16 @@ type GitSyncFile = {
 
 type GitSyncSource = {
   id: string;
+  name: string | null;
   enabled: boolean;
   repo_url: string | null;
   access_token: string | null;
   branch: string | null;
   folder: string;
+  write_access: boolean;
   file_paths: string[];
   last_file_shas: Record<string, string>;
+  last_local_hashes: Record<string, string>;
   installed_files: Record<string, string>;
   last_synced_at: string | null;
   last_sync_message: string | null;
@@ -129,6 +174,7 @@ type GitSyncSettings = {
 type AppSettings = {
   theme: ThemeMode;
   git_sync: GitSyncSettings;
+  backup: BackupSettings;
 };
 
 type GitSyncValidation = {
@@ -136,8 +182,10 @@ type GitSyncValidation = {
   source_id: string | null;
   exists: boolean;
   shortcut_file_found: boolean;
+  write_access: boolean;
   repo: string | null;
   branch: string | null;
+  branches: string[];
   file_path: string | null;
   file_sha: string | null;
   files: GitSyncFile[];
@@ -149,8 +197,10 @@ type GitSyncResult = {
   success: boolean;
   changed: boolean;
   installed: boolean;
+  uploaded: boolean;
   target_path: string | null;
   target_paths: string[];
+  uploaded_paths: string[];
   validation: GitSyncValidation | null;
   validations: GitSyncValidation[];
   settings: AppSettings | null;
@@ -330,7 +380,7 @@ function App() {
       setStatus(nextStatus);
       setShortcuts(nextShortcuts);
       setFolderNames(nextFolders);
-      setSettings(nextSettings);
+      setSettings(normalizeAppSettings(nextSettings));
       if (view === "backups") setBackups(await api<Backup[]>("/api/backups"));
       if (view === "packages") setPackages(await api<PackageItem[]>("/api/packages"));
       if (view === "config") setConfig(await api<ConfigPayload>("/api/config"));
@@ -369,7 +419,7 @@ function App() {
       api<PackageItem[]>("/api/packages").then(setPackages).catch((err) => setError(normalizeError(err)));
     }
     if (view === "settings") {
-      api<AppSettings>("/api/settings").then(setSettings).catch((err) => setError(normalizeError(err)));
+      api<AppSettings>("/api/settings").then((nextSettings) => setSettings(normalizeAppSettings(nextSettings))).catch((err) => setError(normalizeError(err)));
     }
   }, [view]);
 
@@ -588,6 +638,89 @@ function App() {
     }
   };
 
+  const saveBackupSettings = async (backupSettings: BackupSettings) => {
+    setNotice("");
+    setError(null);
+    try {
+      const updated = await api<BackupSettings>("/api/backups/settings", {
+        method: "PUT",
+        body: JSON.stringify(normalizeBackupSettings(backupSettings))
+      });
+      setSettings((current) => current ? { ...current, backup: updated } : current);
+      setNotice("Backup settings saved.");
+      await refresh();
+      return updated;
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
+  const moveBackupLocation = async () => {
+    const destinationFolder = await window.espansoEdit?.selectExportDirectory?.();
+    if (window.espansoEdit?.selectExportDirectory && !destinationFolder) return;
+    const manualPath = destinationFolder ?? window.prompt("Backup folder path");
+    if (!manualPath) return;
+    setNotice("");
+    setError(null);
+    try {
+      const updated = await api<BackupSettings>("/api/backups/move", {
+        method: "POST",
+        body: JSON.stringify({ location: manualPath })
+      });
+      setSettings((current) => current ? { ...current, backup: updated } : current);
+      setNotice(`Backup location moved to ${updated.location}.`);
+      await refresh();
+      setBackups(await api<Backup[]>("/api/backups"));
+      return updated;
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
+  const clearBackups = async () => {
+    if (!window.confirm("Clear all backups? This cannot be undone.")) return;
+    setNotice("");
+    setError(null);
+    try {
+      const result = await api<BackupClearResult>("/api/backups/clear", { method: "POST" });
+      setNotice(`Cleared ${result.removed_count} backup${result.removed_count === 1 ? "" : "s"}.`);
+      setBackups(await api<Backup[]>("/api/backups"));
+      await refresh();
+    } catch (err) {
+      setError(normalizeError(err));
+    }
+  };
+
+  const syncBackups = async () => {
+    setNotice("");
+    setError(null);
+    try {
+      const result = await api<BackupSyncResult>("/api/backups/sync", { method: "POST" });
+      if (result.settings) setSettings((current) => current ? { ...current, backup: result.settings! } : current);
+      setNotice(result.message || `Uploaded ${result.uploaded_count} backup file${result.uploaded_count === 1 ? "" : "s"} to GitHub.`);
+      await refresh();
+      return result;
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
+  const validateBackupGitHub = async (backupSettings: BackupSettings) => {
+    setError(null);
+    try {
+      return await api<BackupGitHubValidation>("/api/backups/github/validate", {
+        method: "POST",
+        body: JSON.stringify(normalizeBackupSettings(backupSettings))
+      });
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
   const installPackage = async (values: PackageInstallValues) => {
     setNotice("");
     setError(null);
@@ -634,9 +767,9 @@ function App() {
     try {
       const updated = await api<AppSettings>("/api/settings", {
         method: "PUT",
-        body: JSON.stringify(nextSettings)
+        body: JSON.stringify(normalizeAppSettings(nextSettings))
       });
-      setSettings(updated);
+      setSettings(normalizeAppSettings(updated));
       setNotice("Settings saved.");
       await refresh();
       return updated;
@@ -664,8 +797,12 @@ function App() {
     setError(null);
     try {
       const result = await api<GitSyncResult>("/api/settings/git-sync/sync", { method: "POST" });
-      if (result.settings) setSettings(result.settings);
-      const action = result.installed ? `installed ${result.target_paths.length} file${result.target_paths.length === 1 ? "" : "s"}` : "already up to date";
+      if (result.settings) setSettings(normalizeAppSettings(result.settings));
+      const actions = [
+        result.installed ? `installed ${result.target_paths.length} file${result.target_paths.length === 1 ? "" : "s"}` : "",
+        result.uploaded ? `uploaded ${result.uploaded_paths.length} file${result.uploaded_paths.length === 1 ? "" : "s"}` : "",
+      ].filter(Boolean);
+      const action = actions.length > 0 ? actions.join(" and ") : "already up to date";
       setNotice(`GitHub shortcuts ${action}.${result.reload ? ` ${reloadMessage(result.reload)}` : ""}`);
       await refresh();
       return result;
@@ -683,7 +820,7 @@ function App() {
         method: "POST",
         body: JSON.stringify({ remove_shortcuts: removeShortcuts })
       });
-      if (result.settings) setSettings(result.settings);
+      if (result.settings) setSettings(normalizeAppSettings(result.settings));
       const cleanup = removeShortcuts ? ` Removed ${result.target_paths.length} synced file${result.target_paths.length === 1 ? "" : "s"}.` : " Installed shortcuts were kept.";
       setNotice(`GitHub sync disabled for ${source.repo_url ?? "repository"}.${cleanup}${result.reload ? ` ${reloadMessage(result.reload)}` : ""}`);
       await refresh();
@@ -699,7 +836,7 @@ function App() {
     api<GitSyncResult>("/api/settings/git-sync/sync", { method: "POST" })
       .then(async (result) => {
         if (!active) return;
-        if (result.settings) setSettings(result.settings);
+        if (result.settings) setSettings(normalizeAppSettings(result.settings));
         if (result.installed) {
           setNotice(`GitHub shortcuts installed ${result.target_paths.length} file${result.target_paths.length === 1 ? "" : "s"}. ${result.reload ? reloadMessage(result.reload) : ""}`);
           await refresh();
@@ -713,12 +850,19 @@ function App() {
     };
   }, []);
 
+  const alertStack = createPortal(
+    <div className="statusOverlay" aria-live="polite">
+      {loading && <div className="loading">Loading...</div>}
+      {error && <Alert type="error" title={error.code} message={error.message} details={error.details} onClose={() => setError(null)} />}
+      {notice && <Alert type="success" title="Success" message={notice} onClose={() => setNotice("")} />}
+    </div>,
+    document.body,
+  );
+
   return (
-    <div className={`shell ${sidebarCollapsed ? "sidebarCollapsed" : ""}`}>
-      <div className="alertStack" aria-live="polite">
-        {error && <Alert type="error" title={error.code} message={error.message} details={error.details} onClose={() => setError(null)} />}
-        {notice && <Alert type="success" title="Success" message={notice} onClose={() => setNotice("")} />}
-      </div>
+    <>
+      {alertStack}
+      <div className={`shell ${sidebarCollapsed ? "sidebarCollapsed" : ""}`}>
       <aside className="sidebar">
         <button
           className="sidebarToggle"
@@ -749,14 +893,13 @@ function App() {
                 onSelect={setSelectedFolder}
                 onDropShortcut={dropShortcut}
                 onDeleteFolder={deleteFolder}
-                isSyncedFolder={(folder) => enabledSyncSourcesForFolder(settings, folder).length > 0}
+                syncModeForFolder={(folder) => syncModeForFolder(settings, folder)}
               />
             )}
           </>
         )}
       </aside>
       <main className="content">
-        {loading && <div className="loading">Loading...</div>}
         {view === "shortcuts" && (
           <ShortcutsView
             shortcuts={filtered}
@@ -774,7 +917,18 @@ function App() {
           />
         )}
         {view === "health" && <HealthView status={status} onValidate={runValidation} />}
-        {view === "backups" && <BackupsView backups={backups} onRestore={restore} />}
+        {view === "backups" && (
+          <BackupsView
+            backups={backups}
+            settings={settings?.backup ?? defaultBackupSettings()}
+            onRestore={restore}
+            onSaveSettings={saveBackupSettings}
+            onMoveLocation={moveBackupLocation}
+            onClear={clearBackups}
+            onSync={syncBackups}
+            onValidateGitHub={validateBackupGitHub}
+          />
+        )}
         {view === "packages" && <PackagesView packages={packages} onInstall={installPackage} onUpdate={updatePackage} onRemove={removePackage} />}
         {view === "settings" && (
           <SettingsView
@@ -820,7 +974,8 @@ function App() {
           onImport={importMacOSReplacements}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -1095,7 +1250,7 @@ function FolderRail(props: {
   onSelect: (folder: string) => void;
   onDropShortcut: (shortcutId: string, folder: string) => void;
   onDeleteFolder: (folder: string) => void;
-  isSyncedFolder: (folder: string) => boolean;
+  syncModeForFolder: (folder: string) => SyncMode;
 }) {
   const totalCount = props.folders.reduce((sum, folder) => sum + folder.count, 0);
 
@@ -1113,7 +1268,8 @@ function FolderRail(props: {
           <strong>{totalCount}</strong>
         </button>
         {props.folders.map((folder) => {
-          const isSynced = props.isSyncedFolder(folder.name);
+          const syncMode = props.syncModeForFolder(folder.name);
+          const isSynced = syncMode !== "none";
           return (
             <div
               key={folder.name}
@@ -1122,7 +1278,18 @@ function FolderRail(props: {
               onDrop={(event) => dropOnFolder(event, folder.name)}
             >
               <button className="folderSelect" onClick={() => props.onSelect(folder.name)}>
-                <span>{folder.name}</span>
+                <span className="folderNameWithSync">
+                  <span className="folderNameText">{folder.name}</span>
+                  {isSynced && (
+                    <span
+                      className={`folderSyncIcon ${syncMode}`}
+                      title={syncMode === "two_way" ? "Two-way GitHub sync" : "One-way GitHub sync"}
+                      aria-label={syncMode === "two_way" ? "Two-way GitHub sync" : "One-way GitHub sync"}
+                    >
+                      {syncMode === "two_way" ? "⇆" : "↓"}
+                    </span>
+                  )}
+                </span>
                 <strong>{folder.count}</strong>
               </button>
               <IconButton
@@ -1990,7 +2157,7 @@ function SettingsView(props: {
     setSaving(true);
     setLocalError("");
     try {
-      const saved = await props.onSave({ theme, git_sync: normalized });
+      const saved = await props.onSave({ theme, git_sync: normalized, backup: props.settings?.backup ?? defaultBackupSettings() });
       setGitSync(saved.git_sync);
       setTheme(saved.theme);
     } catch (err) {
@@ -2075,11 +2242,17 @@ function SettingsView(props: {
         <div className="syncSourceList">
           {gitSync.sources.map((source, index) => {
             const validation = validations[source.id];
+            const sourceSyncMode = syncModeForSource(source, validation);
+            const sourceLabel = syncSourceLabel(source, index);
+            const branchOptions = gitBranchOptions(source, validation);
             const filePathsText = source.file_paths.join("\n");
             return (
               <div className="syncSourceCard" key={source.id}>
                 <div className="formBuilderHeader">
-                  <h2>Repository {index + 1}</h2>
+                  <h2>
+                    {sourceLabel}
+                    <StatusPill ok={sourceSyncMode === "two_way"} label={sourceSyncMode === "two_way" ? "2-way sync" : "1-way sync"} />
+                  </h2>
                   <div className="toolbarActions">
                     <button type="button" disabled={validatingId === source.id || !source.repo_url} onClick={() => validate(source)}>
                       {validatingId === source.id ? "Validating..." : "Validate"}
@@ -2087,64 +2260,103 @@ function SettingsView(props: {
                     <button type="button" onClick={() => removeSource(source.id)}>Remove</button>
                   </div>
                 </div>
-                <div className="settingsGrid">
-                  <label>
-                    Repository URL
-                    <input
-                      value={source.repo_url ?? ""}
-                      onChange={(event) => updateSource(source.id, { repo_url: event.target.value })}
-                      placeholder="https://github.com/user/espanso-shortcuts"
-                    />
-                  </label>
-                  <label>
-                    Branch
-                    <input
-                      value={source.branch ?? ""}
-                      onChange={(event) => updateSource(source.id, { branch: event.target.value })}
-                      placeholder="Default branch"
-                    />
-                  </label>
-                  <label>
-                    <span className="labelWithInfo">
-                      Access token
-                      <InfoButton
-                        text="Private repositories need a fine-grained GitHub personal access token with Contents set to Read-only for the selected repository."
-                        linkUrl="https://github.com/settings/personal-access-tokens/new"
-                        linkLabel="Create token"
+                <div className="settingsColumns">
+                  <div className="settingsColumn">
+                    <label>
+                      <span className="labelWithInfo">
+                        Sync name
+                        <InfoButton text="A friendly local label for this sync source. It only changes how the sync is shown in EspansoEdit." />
+                      </span>
+                      <input
+                        value={source.name ?? ""}
+                        onChange={(event) => updateSource(source.id, { name: event.target.value })}
+                        placeholder={`Repository ${index + 1}`}
                       />
-                    </span>
-                    <input
-                      type="password"
-                      value={source.access_token ?? ""}
-                      onChange={(event) => updateSource(source.id, { access_token: event.target.value })}
-                      placeholder="Required for private repositories"
-                    />
-                  </label>
-                  <label>
-                    Destination folder
-                    <FolderInput value={source.folder || "GitHub"} folders={props.folders} onChange={(folder) => updateSource(source.id, { folder })} />
-                  </label>
-                  <label>
-                    Match file paths
-                    <textarea
-                      className="codeInput compactCodeInput"
-                      value={filePathsText}
-                      onChange={(event) => updateSource(source.id, { file_paths: linesToFilePaths(event.target.value) })}
-                      placeholder={"Auto-detect all Espanso YAML files\nor enter one path per line"}
-                      rows={5}
-                    />
-                  </label>
-                </div>
-                <div className="optionGrid">
-                  <label className="checkRow">
-                    <input type="checkbox" checked={source.enabled} onChange={(event) => toggleSourceEnabled(source, event.target.checked)} />
-                    <span>Enabled</span>
-                    <InfoButton text="Includes this repository when GitHub shortcut sync runs." />
-                  </label>
+                    </label>
+                    <label>
+                      <span className="labelWithInfo">
+                        Repository URL
+                        <InfoButton text="The GitHub repository that contains one or more Espanso YAML match files. Use the repository URL, or a GitHub file URL to preselect one file." />
+                      </span>
+                      <input
+                        value={source.repo_url ?? ""}
+                        onChange={(event) => updateSource(source.id, { repo_url: event.target.value })}
+                        placeholder="https://github.com/user/espanso-shortcuts"
+                      />
+                    </label>
+                    <label>
+                      <span className="labelWithInfo">
+                        Access token
+                        <InfoButton
+                          text="Private repositories need a fine-grained GitHub personal access token with Contents read access. Set Contents to Read and write to let EspansoEdit push local synced-folder changes back to GitHub."
+                          linkUrl="https://github.com/settings/personal-access-tokens/new"
+                          linkLabel="Create token"
+                        />
+                      </span>
+                      <input
+                        type="password"
+                        value={source.access_token ?? ""}
+                        onChange={(event) => updateSource(source.id, { access_token: event.target.value })}
+                        placeholder="Required for private repositories"
+                      />
+                    </label>
+                    <label className="checkRow">
+                      <input type="checkbox" checked={source.enabled} onChange={(event) => toggleSourceEnabled(source, event.target.checked)} />
+                      <span>Enabled</span>
+                      <InfoButton text="Includes this repository when GitHub shortcut sync runs." />
+                    </label>
+                  </div>
+                  <div className="settingsColumn">
+                    <label>
+                      <span className="labelWithInfo">
+                        Branch
+                        <InfoButton text="The Git branch to sync from. Click Validate after entering the repository URL and token to load available branches from GitHub." />
+                      </span>
+                      {branchOptions.length ? (
+                        <select
+                          value={source.branch || validation?.branch || branchOptions[0]}
+                          onChange={(event) => updateSource(source.id, { branch: event.target.value })}
+                        >
+                          {branchOptions.map((branch) => (
+                            <option key={branch} value={branch}>{branch}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <select
+                          value={source.branch ?? ""}
+                          onChange={(event) => updateSource(source.id, { branch: event.target.value })}
+                        >
+                          <option value="">Default branch</option>
+                          {source.branch && <option value={source.branch}>{source.branch}</option>}
+                        </select>
+                      )}
+                    </label>
+                    <label>
+                      <span className="labelWithInfo">
+                        Destination folder
+                        <InfoButton text="The local Espanso folder where shortcuts from this sync source are installed. Synced folders are protected from deletion while sync is enabled." />
+                      </span>
+                      <FolderInput value={source.folder || "GitHub"} folders={props.folders} onChange={(folder) => updateSource(source.id, { folder })} />
+                    </label>
+                    <label>
+                      <span className="labelWithInfo">
+                        Match file paths
+                        <InfoButton text="Optional list of Espanso YAML files to sync, one path per line. Leave blank to auto-detect YAML files that contain a matches list." />
+                      </span>
+                      <textarea
+                        className="codeInput compactCodeInput"
+                        value={filePathsText}
+                        onChange={(event) => updateSource(source.id, { file_paths: linesToFilePaths(event.target.value) })}
+                        placeholder={"Auto-detect all Espanso YAML files\nor enter one path per line"}
+                        rows={5}
+                      />
+                    </label>
+                  </div>
                 </div>
                 {validation && (
                   <div className="syncStatus">
                     <StatusPill ok={validation.shortcut_file_found} label={validation.shortcut_file_found ? "Valid" : "Check"} />
+                    {validation.shortcut_file_found && <StatusPill ok={validation.write_access} label={validation.write_access ? "Read/write" : "Read-only"} />}
                     <span>{validation.message}</span>
                     {validation.files.map((file) => (
                       <strong key={file.file_path}>{file.file_path}</strong>
@@ -2153,7 +2365,7 @@ function SettingsView(props: {
                 )}
                 <div className="settingsMeta">
                   <span>Last sync: {source.last_synced_at ?? "Never"}</span>
-                  <span>{source.last_sync_message ?? "No sync result yet."}</span>
+                  <span>{source.last_sync_message ?? (source.write_access ? "Two-way sync ready after first sync." : "No sync result yet.")}</span>
                 </div>
               </div>
             );
@@ -2167,10 +2379,212 @@ function SettingsView(props: {
   );
 }
 
-function BackupsView({ backups, onRestore }: { backups: Backup[]; onRestore: (backup: Backup) => void }) {
+function BackupsView({
+  backups,
+  settings,
+  onRestore,
+  onSaveSettings,
+  onMoveLocation,
+  onClear,
+  onSync,
+  onValidateGitHub,
+}: {
+  backups: Backup[];
+  settings: BackupSettings;
+  onRestore: (backup: Backup) => void;
+  onSaveSettings: (settings: BackupSettings) => Promise<BackupSettings>;
+  onMoveLocation: () => Promise<BackupSettings | undefined>;
+  onClear: () => Promise<void>;
+  onSync: () => Promise<BackupSyncResult>;
+  onValidateGitHub: (settings: BackupSettings) => Promise<BackupGitHubValidation>;
+}) {
+  const [draft, setDraft] = useState<BackupSettings>(() => normalizeBackupSettings(settings));
+  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const [settingsExpanded, setSettingsExpanded] = useState(true);
+  const [validation, setValidation] = useState<BackupGitHubValidation | null>(null);
+
+  useEffect(() => {
+    setDraft(normalizeBackupSettings(settings));
+  }, [settings]);
+
+  const updateDraft = (patch: Partial<BackupSettings>) => {
+    setDraft((current) => ({ ...current, ...patch }));
+  };
+
+  const branchOptions = backupBranchOptions(draft, validation ?? undefined);
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const updated = await onSaveSettings(draft);
+      setDraft(normalizeBackupSettings(updated));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const moveLocation = async () => {
+    setMoving(true);
+    try {
+      const updated = await onMoveLocation();
+      if (updated) setDraft(normalizeBackupSettings(updated));
+    } finally {
+      setMoving(false);
+    }
+  };
+
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const result = await onSync();
+      if (result.settings) setDraft(normalizeBackupSettings(result.settings));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const validateGitHub = async () => {
+    setSyncing(true);
+    try {
+      const result = await onValidateGitHub(draft);
+      setValidation(result);
+      updateDraft({ github_branch: result.branch ?? draft.github_branch });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <section>
-      <h1>Backups</h1>
+      <div className="toolbar">
+        <h1>Backups</h1>
+        <div className="actions">
+          <button type="button" onClick={moveLocation} disabled={moving}>
+            {moving ? "Moving..." : "Move Location"}
+          </button>
+          <button type="button" onClick={onClear} disabled={backups.length === 0}>
+            Clear Backups
+          </button>
+        </div>
+      </div>
+      <form className={`panel backupSettingsPanel ${settingsExpanded ? "expanded" : "collapsed"}`} onSubmit={save}>
+        <button
+          className="collapsibleHeader"
+          type="button"
+          aria-expanded={settingsExpanded}
+          onClick={() => setSettingsExpanded((value) => !value)}
+        >
+          <span>Backup settings</span>
+          <span className="collapsibleMeta">{draft.location ?? "Default Espanso config folder"}</span>
+          <span className="collapsibleChevron">{settingsExpanded ? "⌃" : "⌄"}</span>
+        </button>
+        {settingsExpanded && (
+          <div className="backupSettingsContent">
+            <div className="backupGeneralGroup">
+              <div className="settingsColumn">
+                <label>
+                  <LabelWithInfo
+                    text="Backup frequency"
+                    info="Controls automatic safety backups before shortcut files are changed. Manual-only keeps existing backups but stops creating new automatic backups."
+                  />
+                  <select value={draft.frequency} onChange={(event) => updateDraft({ frequency: event.target.value as BackupFrequency })}>
+                    <option value="always">Every change</option>
+                    <option value="daily">Daily per file</option>
+                    <option value="manual">Manual only</option>
+                  </select>
+                </label>
+              </div>
+              <div className="settingsMeta backupLocationMeta">
+                <span>Current location</span>
+                <strong>{draft.location ?? "Default Espanso config folder"}</strong>
+              </div>
+            </div>
+            <div className="backupGitHubGroup">
+              <div className="backupGroupHeader">
+                <label className="checkboxLabel">
+                  <input
+                    type="checkbox"
+                    checked={draft.github_enabled}
+                    onChange={(event) => updateDraft({ github_enabled: event.target.checked })}
+                  />
+                  Sync backups to GitHub
+                  <InfoButton text="Uploads local backup files to a GitHub repository path. This is one-way backup storage and requires a token with Contents read and write access." />
+                </label>
+                <div className="settingsMeta">
+                  <span>Last sync: {draft.last_synced_at ?? "Never"}</span>
+                  <span>{draft.last_sync_message ?? "No backup sync result yet."}</span>
+                </div>
+              </div>
+              <div className="backupGithubGrid">
+                <label>
+                  <LabelWithInfo text="Repository URL" info="GitHub repository that will store backup files. Use the repository URL, not a shortcut file URL." />
+                  <input
+                    value={draft.github_repo_url ?? ""}
+                    onChange={(event) => {
+                      setValidation(null);
+                      updateDraft({ github_repo_url: event.target.value });
+                    }}
+                    placeholder="https://github.com/owner/repo"
+                  />
+                </label>
+                <label>
+                  <LabelWithInfo text="Branch" info="Branch where backup files should be stored. Leave blank to use the repository default branch." />
+                  {branchOptions.length ? (
+                    <select value={draft.github_branch || validation?.branch || branchOptions[0]} onChange={(event) => updateDraft({ github_branch: event.target.value })}>
+                      {branchOptions.map((branch) => (
+                        <option key={branch} value={branch}>{branch}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <select value={draft.github_branch ?? ""} onChange={(event) => updateDraft({ github_branch: event.target.value })}>
+                      <option value="">Default branch</option>
+                      {draft.github_branch && <option value={draft.github_branch}>{draft.github_branch}</option>}
+                    </select>
+                  )}
+                </label>
+                <label className="backupSecondRow">
+                  <LabelWithInfo text="Repository path" info="Folder path inside the GitHub repository where backup folders and metadata files are uploaded." />
+                  <input
+                    value={draft.github_path}
+                    onChange={(event) => updateDraft({ github_path: event.target.value })}
+                    placeholder="espansoedit-backups"
+                  />
+                </label>
+                <label className="backupSecondRow">
+                  <LabelWithInfo text="Access token" info="Use a fine-grained GitHub token with Contents read and write access for the selected repository." />
+                  <input
+                    type="password"
+                    value={draft.github_access_token ?? ""}
+                    onChange={(event) => updateDraft({ github_access_token: event.target.value })}
+                    placeholder="github_pat_..."
+                  />
+                </label>
+              </div>
+              {validation && (
+                <div className="syncStatus">
+                  <StatusPill ok={validation.exists} label={validation.exists ? "Found" : "Check"} />
+                  <StatusPill ok={validation.write_access} label={validation.write_access ? "Read/write" : "Read-only"} />
+                  <span>{validation.message}</span>
+                </div>
+              )}
+              <div className="buttonRow">
+                <button type="button" disabled={syncing || !draft.github_repo_url} onClick={validateGitHub}>
+                  Validate
+                </button>
+                <button className="primary" type="submit" disabled={saving}>
+                  {saving ? "Saving..." : "Save Backup Settings"}
+                </button>
+                <button type="button" disabled={syncing || !draft.github_enabled} onClick={syncNow}>
+                  {syncing ? "Syncing..." : "Sync Backups Now"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </form>
       <div className="table">
         <div className="row header">
           <span>Timestamp</span>
@@ -2183,7 +2597,7 @@ function BackupsView({ backups, onRestore }: { backups: Backup[]; onRestore: (ba
             <span>{backup.timestamp}</span>
             <span>{fileName(backup.original_path)}</span>
             <span>{backup.operation}</span>
-            <button onClick={() => onRestore(backup)}>Restore</button>
+            <button type="button" onClick={() => onRestore(backup)}>Restore</button>
           </div>
         ))}
         {backups.length === 0 && <div className="empty">No backups found.</div>}
@@ -2259,6 +2673,32 @@ function reloadMessage(reload: Record<string, unknown> | null) {
 function enabledSyncSourcesForFolder(settings: AppSettings | null, folder: string) {
   const target = folderKey(folder);
   return settings?.git_sync.sources.filter((source) => source.enabled && folderKey(source.folder) === target) ?? [];
+}
+
+function syncModeForFolder(settings: AppSettings | null, folder: string): SyncMode {
+  const sources = enabledSyncSourcesForFolder(settings, folder);
+  if (sources.some((source) => source.write_access)) return "two_way";
+  if (sources.length > 0) return "one_way";
+  return "none";
+}
+
+function syncModeForSource(source: GitSyncSource, validation?: GitSyncValidation): SyncMode {
+  return validation?.write_access || source.write_access ? "two_way" : "one_way";
+}
+
+function syncSourceLabel(source: GitSyncSource, index: number) {
+  if (source.name?.trim()) return source.name.trim();
+  const repoPath = source.repo_url ? source.repo_url.trim().replace(/\/+$/, "").split("/").slice(-1)[0] : "";
+  const repoName = repoPath.endsWith(".git") ? repoPath.slice(0, -4) : repoPath;
+  return repoName || `Repository ${index + 1}`;
+}
+
+function gitBranchOptions(source: GitSyncSource, validation?: GitSyncValidation) {
+  return Array.from(new Set([source.branch, validation?.branch, ...(validation?.branches ?? [])].filter((branch): branch is string => Boolean(branch?.trim()))));
+}
+
+function backupBranchOptions(settings: BackupSettings, validation?: BackupGitHubValidation) {
+  return Array.from(new Set([settings.github_branch, validation?.branch, ...(validation?.branches ?? [])].filter((branch): branch is string => Boolean(branch?.trim()))));
 }
 
 function folderKey(folder: string | null | undefined) {
@@ -2451,16 +2891,56 @@ function defaultGitSyncSettings(): GitSyncSettings {
   };
 }
 
+function defaultBackupSettings(): BackupSettings {
+  return {
+    location: null,
+    frequency: "always",
+    github_enabled: false,
+    github_repo_url: null,
+    github_access_token: null,
+    github_branch: null,
+    github_path: "espansoedit-backups",
+    last_synced_at: null,
+    last_sync_message: null
+  };
+}
+
+function normalizeAppSettings(settings: AppSettings): AppSettings {
+  return {
+    theme: settings.theme ?? "dark",
+    git_sync: normalizeGitSyncSettings(settings.git_sync ?? defaultGitSyncSettings()),
+    backup: normalizeBackupSettings(settings.backup ?? defaultBackupSettings())
+  };
+}
+
+function normalizeBackupSettings(settings: BackupSettings): BackupSettings {
+  const defaults = defaultBackupSettings();
+  return {
+    ...defaults,
+    ...settings,
+    location: settings.location?.trim() || null,
+    github_repo_url: settings.github_repo_url?.trim() || null,
+    github_access_token: settings.github_access_token?.trim() || null,
+    github_branch: settings.github_branch?.trim() || null,
+    github_path: settings.github_path?.trim() || defaults.github_path,
+    last_synced_at: settings.last_synced_at?.trim() || null,
+    last_sync_message: settings.last_sync_message?.trim() || null
+  };
+}
+
 function defaultGitSyncSource(): GitSyncSource {
   return {
     id: `source-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name: "",
     enabled: true,
     repo_url: "",
     access_token: "",
     branch: "",
     folder: "GitHub",
+    write_access: false,
     file_paths: [],
     last_file_shas: {},
+    last_local_hashes: {},
     installed_files: {},
     last_synced_at: null,
     last_sync_message: null
@@ -2477,11 +2957,14 @@ function normalizeGitSyncSettings(settings: GitSyncSettings): GitSyncSettings {
 function normalizeGitSyncSource(source: GitSyncSource): GitSyncSource {
   return {
     ...source,
+    name: source.name?.trim() || null,
     repo_url: source.repo_url?.trim() || null,
     access_token: source.access_token?.trim() || null,
     branch: source.branch?.trim() || null,
     folder: source.folder?.trim() || "GitHub",
-    file_paths: source.file_paths.map((path) => path.trim()).filter(Boolean)
+    write_access: source.write_access,
+    file_paths: source.file_paths.map((path) => path.trim()).filter(Boolean),
+    last_local_hashes: source.last_local_hashes ?? {}
   };
 }
 
