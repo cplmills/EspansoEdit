@@ -1386,6 +1386,16 @@ function ShortcutDialog(props: {
       setLocalError("Form template is required.");
       return;
     }
+    if (!raw && matchType === "form") {
+      const formValidation = validateFormTemplateFields(form, formFieldsYaml);
+      if (formValidation.error) {
+        setLocalError(formValidation.error);
+        return;
+      }
+      if (formValidation.warning && !window.confirm(`${formValidation.warning} Save anyway?`)) {
+        return;
+      }
+    }
     setSaving(true);
     setLocalError("");
     await props.onSave({
@@ -2987,6 +2997,89 @@ function extractFormPlaceholders(template: string) {
     names.add(match[1]);
   }
   return [...names];
+}
+
+function validateFormTemplateFields(template: string, fieldsYaml: string) {
+  const placeholders = extractFormPlaceholders(template);
+  const definitions = parseFormFieldDefinitions(fieldsYaml);
+  if (definitions.error) return { error: definitions.error, warning: "" };
+
+  const fieldNames = new Set(definitions.fields.map((field) => field.name));
+  const missing = placeholders.filter((name) => !fieldNames.has(name));
+  if (missing.length > 0) {
+    return {
+      error: `Form fields YAML is missing ${listNames(missing)} used in the form template.`,
+      warning: ""
+    };
+  }
+
+  const placeholderNames = new Set(placeholders);
+  const extra = definitions.fields.map((field) => field.name).filter((name) => !placeholderNames.has(name));
+  return {
+    error: "",
+    warning: extra.length > 0 ? `Form fields YAML contains unused ${listNames(extra)}.` : ""
+  };
+}
+
+function parseFormFieldDefinitions(text: string): { fields: FormFieldDraft[]; error: string } {
+  const fields: FormFieldDraft[] = [];
+  let current: FormFieldDraft | null = null;
+  let readingValues = false;
+
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const fieldMatch = line.match(/^([A-Za-z0-9_-]+):\s*(\{\})?\s*$/);
+    if (fieldMatch) {
+      current = createFormField(fieldMatch[1]);
+      fields.push(current);
+      readingValues = false;
+      continue;
+    }
+    const invalidTopLevel = line.match(/^([A-Za-z0-9_-]+):\s+.+$/);
+    if (invalidTopLevel) {
+      return { fields, error: `Form field ${invalidTopLevel[1]} must be a mapping.` };
+    }
+    if (!current) continue;
+    const typeMatch = line.match(/^\s+type:\s*([A-Za-z0-9_-]+)\s*$/);
+    if (typeMatch) {
+      if (!["text", "choice", "list"].includes(typeMatch[1])) {
+        return { fields, error: `Form field ${current.name} has unsupported type ${typeMatch[1]}.` };
+      }
+      current.type = typeMatch[1] as FormFieldType;
+      readingValues = false;
+      continue;
+    }
+    if (/^\s+multiline:\s*true\s*$/.test(line)) {
+      current.type = "multiline";
+      readingValues = false;
+      continue;
+    }
+    if (/^\s+values:\s*$/.test(line)) {
+      readingValues = true;
+      continue;
+    }
+    const inlineValuesMatch = line.match(/^\s+values:\s*\[(.*)\]\s*$/);
+    if (inlineValuesMatch) {
+      current.values = inlineValuesMatch[1].split(",").map((value) => value.trim().replace(/^["']|["']$/g, "")).filter(Boolean).join("\n");
+      readingValues = false;
+      continue;
+    }
+    const valueMatch = line.match(/^\s+-\s*(.+)\s*$/);
+    if (readingValues && valueMatch) {
+      current.values = `${current.values}${current.values ? "\n" : ""}${valueMatch[1].replace(/^["']|["']$/g, "")}`;
+    }
+  }
+
+  const invalidChoice = fields.find((field) => (field.type === "choice" || field.type === "list") && !field.values.trim());
+  if (invalidChoice) {
+    return { fields, error: `Form field ${invalidChoice.name} must include values.` };
+  }
+  return { fields, error: "" };
+}
+
+function listNames(names: string[]) {
+  return names.map((name) => `[[${name}]]`).join(", ");
 }
 
 function buildFormFieldsYaml(fields: FormFieldDraft[]) {

@@ -34,33 +34,37 @@ def trigger_from_case_insensitive_regex(regex: str) -> str | None:
 
 class YamlMatchService:
     def __init__(self) -> None:
-        self.yaml = YAML()
-        self.yaml.preserve_quotes = True
-        self.yaml.indent(mapping=2, sequence=4, offset=2)
+        self.yaml = self._new_yaml()
 
     def load_file(self, path: Path) -> Any:
         try:
             text = normalize_newlines(path.read_text(encoding="utf-8"))
-            return self.yaml.load(text) if text.strip() else CommentedMap({"matches": CommentedSeq()})
+            return self._new_yaml().load(text) if text.strip() else CommentedMap({"matches": CommentedSeq()})
         except Exception as exc:
             raise AppError("YAML_PARSE_FAILED", f"Failed to parse {path.name}.", str(exc), 422) from exc
 
     def dump_file(self, path: Path, data: Any) -> None:
         with path.open("w", encoding="utf-8") as handle:
-            self.yaml.dump(data, handle)
+            self._new_yaml().dump(data, handle)
 
     def dumps(self, data: Any) -> str:
         import io
 
         stream = io.StringIO()
-        self.yaml.dump(data, stream)
+        self._new_yaml().dump(data, stream)
         return stream.getvalue()
 
     def loads(self, text: str) -> Any:
         try:
-            return self.yaml.load(normalize_newlines(text))
+            return self._new_yaml().load(normalize_newlines(text))
         except Exception as exc:
             raise AppError("YAML_VALIDATION_FAILED", "The proposed YAML is invalid.", str(exc), 422) from exc
+
+    def _new_yaml(self) -> YAML:
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        yaml.indent(mapping=2, sequence=4, offset=2)
+        return yaml
 
     def parse_shortcuts(self, path: Path, match_root: Path | None = None) -> list[Shortcut]:
         data = self.load_file(path)

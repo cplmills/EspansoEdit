@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -76,7 +77,7 @@ class ShortcutService:
         raise AppError("SHORTCUT_NOT_FOUND", "Shortcut was not found.", status_code=404)
 
     def add_shortcut(self, payload: ShortcutCreate) -> tuple[Shortcut, ReloadResult]:
-        self._validate_payload(payload.trigger, payload.replace, payload.form)
+        self._validate_payload(payload.trigger, payload.replace, payload.form, payload.form_fields_yaml)
         managed = self._managed_file_for_folder(payload.folder)
         if not managed.exists():
             managed.parent.mkdir(parents=True, exist_ok=True)
@@ -112,7 +113,7 @@ class ShortcutService:
         )
 
     def update_shortcut(self, shortcut_id: str, payload: ShortcutUpdate) -> tuple[Shortcut, ReloadResult]:
-        self._validate_payload(payload.trigger, payload.replace, payload.form)
+        self._validate_payload(payload.trigger, payload.replace, payload.form, payload.form_fields_yaml)
         shortcut = self.get_shortcut(shortcut_id)
         if not shortcut.editable:
             raise AppError("SHORTCUT_UNSUPPORTED", "Unsupported shortcuts are read-only.", status_code=422)
@@ -797,15 +798,46 @@ class ShortcutService:
         imported_ids = {self.yaml.shortcut_id(path, entry) for entry in entries}
         return [shortcut for shortcut in self.yaml.parse_shortcuts(path, paths.match_path) if shortcut.id in imported_ids]
 
-    def _validate_payload(self, trigger: str, replace: str, form: str | None = None) -> None:
+    def _validate_payload(self, trigger: str, replace: str, form: str | None = None, form_fields_yaml: str | None = None) -> None:
         if not trigger.strip():
             raise AppError("INVALID_TRIGGER", "Trigger cannot be empty.", status_code=422)
         if form is not None:
             if not form.strip():
                 raise AppError("INVALID_FORM", "Form template cannot be empty.", status_code=422)
+            self._validate_form_fields_match_template(form, form_fields_yaml)
             return
         if replace == "":
             raise AppError("INVALID_REPLACE", "Replacement cannot be empty.", status_code=422)
+
+    def _validate_form_fields_match_template(self, form: str, form_fields_yaml: str | None) -> None:
+        placeholders = set(re.findall(r"\[\[([A-Za-z0-9_-]+)\]\]", form))
+        fields = self._parse_form_fields(form_fields_yaml) or {}
+        if not isinstance(fields, dict):
+            raise AppError("INVALID_FORM_FIELDS", "Form fields YAML must be a mapping.", status_code=422)
+
+        missing = sorted(placeholders - set(fields.keys()))
+        if missing:
+            raise AppError(
+                "FORM_FIELDS_MISSING",
+                "Form fields YAML is missing fields used in the form template.",
+                {"missing_fields": missing},
+                422,
+            )
+
+        for name, config in fields.items():
+            if not isinstance(name, str) or not name.strip():
+                raise AppError("INVALID_FORM_FIELDS", "Form field names must be non-empty strings.", status_code=422)
+            if not isinstance(config, dict):
+                raise AppError("INVALID_FORM_FIELDS", f"Form field '{name}' must be a mapping.", status_code=422)
+            field_type = config.get("type", "text")
+            if field_type not in {"text", "choice", "list"}:
+                raise AppError("INVALID_FORM_FIELDS", f"Form field '{name}' has an unsupported type.", {"field": name, "type": field_type}, 422)
+            if field_type in {"choice", "list"}:
+                values = config.get("values")
+                if not isinstance(values, list) or not values:
+                    raise AppError("INVALID_FORM_FIELDS", f"Form field '{name}' must include values.", {"field": name}, 422)
+                if any(not isinstance(value, str) or not value.strip() for value in values):
+                    raise AppError("INVALID_FORM_FIELDS", f"Form field '{name}' values must be non-empty strings.", {"field": name}, 422)
 
     def _validate_raw_match_entry(self, entry: Any) -> None:
         if not isinstance(entry, dict):

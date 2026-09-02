@@ -113,6 +113,53 @@ def test_adding_shortcut_to_writable_synced_folder_uses_synced_file(service: Sho
     assert not (espanso_root / "match" / "Shared" / "espanso-shortcut-manager.yml").exists()
 
 
+def test_adding_form_shortcut_to_writable_synced_folder(service: ShortcutService, espanso_root: Path) -> None:
+    synced_file = write_match(espanso_root, "Shared/github-acme-shortcuts-base-yml.yml", 'matches:\n  - trigger: ":remote"\n    replace: "Remote"\n')
+    (espanso_root / "espansoedit-settings.json").write_text(
+        """
+{
+  "theme": "dark",
+  "git_sync": {
+    "enabled": true,
+    "sources": [
+      {
+        "id": "source-1",
+        "enabled": true,
+        "repo_url": "https://github.com/acme/shortcuts",
+        "access_token": "github_pat_test",
+        "branch": "main",
+        "folder": "Shared",
+        "write_access": true,
+        "file_paths": ["base.yml"],
+        "last_file_shas": {"base.yml": "sha-1"},
+        "last_local_hashes": {},
+        "installed_files": {"base.yml": "github-acme-shortcuts-base-yml.yml"},
+        "last_synced_at": null,
+        "last_sync_message": null
+      }
+    ]
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    shortcut, _ = service.add_shortcut(
+        ShortcutCreate(
+            trigger=":teamform",
+            form="Hi [[name]],\n\nOrder: [[order]]",
+            form_fields_yaml="name:\n  type: text\norder:\n  type: text\n",
+            folder="Shared",
+        )
+    )
+
+    synced_content = synced_file.read_text(encoding="utf-8")
+    assert shortcut.kind == "form"
+    assert ":teamform" in synced_content
+    assert "form_fields:" in synced_content
+    assert len(service.list_shortcuts()) == 2
+
+
 def test_adding_shortcut_with_common_options(service: ShortcutService, espanso_root: Path) -> None:
     shortcut, _ = service.add_shortcut(
         ShortcutCreate(
@@ -159,7 +206,12 @@ def test_adding_case_insensitive_shortcut(service: ShortcutService, espanso_root
 
 def test_adding_form_shortcut(service: ShortcutService, espanso_root: Path) -> None:
     shortcut, _ = service.add_shortcut(
-        ShortcutCreate(trigger=":reply", form="Hi [[name]],\n\n[[message]]", label="Reply form")
+        ShortcutCreate(
+            trigger=":reply",
+            form="Hi [[name]],\n\n[[message]]",
+            form_fields_yaml="name:\n  type: text\nmessage:\n  type: text\n",
+            label="Reply form",
+        )
     )
 
     content = (espanso_root / "match" / "espanso-shortcut-manager.yml").read_text(encoding="utf-8")
@@ -168,6 +220,46 @@ def test_adding_form_shortcut(service: ShortcutService, espanso_root: Path) -> N
     assert "form:" in content
     assert "[[name]]" in content
     assert "replace:" not in content
+
+
+def test_rejecting_form_shortcut_with_missing_form_field(service: ShortcutService) -> None:
+    with pytest.raises(AppError) as exc:
+        service.add_shortcut(
+            ShortcutCreate(
+                trigger=":reply",
+                form="Hi [[name]],\n\n[[message]]",
+                form_fields_yaml="name:\n  type: text\n",
+            )
+        )
+
+    assert exc.value.code == "FORM_FIELDS_MISSING"
+    assert exc.value.details == {"missing_fields": ["message"]}
+
+
+def test_rejecting_choice_form_field_without_values(service: ShortcutService) -> None:
+    with pytest.raises(AppError) as exc:
+        service.add_shortcut(
+            ShortcutCreate(
+                trigger=":reply",
+                form="Plan: [[plan]]",
+                form_fields_yaml="plan:\n  type: choice\n",
+            )
+        )
+
+    assert exc.value.code == "INVALID_FORM_FIELDS"
+    assert "must include values" in exc.value.message
+
+
+def test_allowing_extra_form_fields(service: ShortcutService) -> None:
+    shortcut, _ = service.add_shortcut(
+        ShortcutCreate(
+            trigger=":reply",
+            form="Hi [[name]]",
+            form_fields_yaml="name:\n  type: text\nunused:\n  type: text\n",
+        )
+    )
+
+    assert shortcut.kind == "form"
 
 
 def test_adding_form_shortcut_with_fields(service: ShortcutService, espanso_root: Path) -> None:
