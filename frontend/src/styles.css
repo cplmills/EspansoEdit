@@ -1174,7 +1174,23 @@ textarea::placeholder {
 }
 
 .configBooleanControl {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
   min-height: 40px;
+}
+
+.configBooleanControl input {
+  width: auto;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.configBooleanControl span {
+  min-width: 0;
+  text-align: left;
 }
 
 .configListInput {
