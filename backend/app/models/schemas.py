@@ -181,6 +181,42 @@ class SettingsUpdate(BaseModel):
     backup: BackupSettings = Field(default_factory=BackupSettings)
 
 
+class EspansoConfigOption(BaseModel):
+    key: str
+    label: str
+    description: str
+    type: Literal["boolean", "number", "text", "select", "list"]
+    category: str
+    default: Any = None
+    choices: list[str] = Field(default_factory=list)
+
+
+class EspansoConfigValue(BaseModel):
+    key: str
+    enabled: bool = False
+    value: Any = None
+
+
+class EspansoConfigUpdate(BaseModel):
+    values: list[EspansoConfigValue] = Field(default_factory=list)
+
+
+class EspansoConfigFile(BaseModel):
+    path: str
+    file: str
+    content: str
+
+
+class EspansoConfigPayload(BaseModel):
+    status: EspansoStatus
+    default_path: str | None = None
+    options: list[EspansoConfigOption] = Field(default_factory=list)
+    values: dict[str, EspansoConfigValue] = Field(default_factory=dict)
+    unknown_values: dict[str, Any] = Field(default_factory=dict)
+    files: list[EspansoConfigFile] = Field(default_factory=list)
+    reload: dict[str, Any] | None = None
+
+
 class GitShortcutSyncValidation(ApiResult):
     source_id: str | None = None
     exists: bool = False

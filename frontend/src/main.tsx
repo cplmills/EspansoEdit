@@ -121,9 +121,32 @@ type BackupGitHubValidation = {
   message: string;
 };
 
+type ConfigOptionType = "boolean" | "number" | "text" | "select" | "list";
+
+type ConfigOption = {
+  key: string;
+  label: string;
+  description: string;
+  type: ConfigOptionType;
+  category: string;
+  default: unknown;
+  choices: string[];
+};
+
+type ConfigValue = {
+  key: string;
+  enabled: boolean;
+  value: unknown;
+};
+
 type ConfigPayload = {
   status: Status;
+  default_path: string | null;
+  options: ConfigOption[];
+  values: Record<string, ConfigValue>;
+  unknown_values: Record<string, unknown>;
   files: { path: string; file: string; content: string }[];
+  reload: Record<string, unknown> | null;
 };
 
 type FolderExportResult = {
@@ -779,6 +802,24 @@ function App() {
     }
   };
 
+  const saveConfig = async (values: ConfigValue[]) => {
+    setNotice("");
+    setError(null);
+    try {
+      const updated = await api<ConfigPayload>("/api/config", {
+        method: "PUT",
+        body: JSON.stringify({ values })
+      });
+      setConfig(updated);
+      setNotice(`Espanso config saved. ${reloadMessage(updated.reload)}`);
+      await refresh();
+      return updated;
+    } catch (err) {
+      setError(normalizeError(err));
+      throw err;
+    }
+  };
+
   const validateGitSyncSettings = async (source: GitSyncSource) => {
     setError(null);
     try {
@@ -940,7 +981,7 @@ function App() {
             onDisableGitSyncSource={disableGitSyncSource}
           />
         )}
-        {view === "config" && <ConfigView config={config} />}
+        {view === "config" && <ConfigView config={config} onSave={saveConfig} />}
       </main>
       {editing && (
         <ShortcutDialog
@@ -2616,15 +2657,100 @@ function BackupsView({
   );
 }
 
-function ConfigView({ config }: { config: ConfigPayload | null }) {
+function ConfigView({ config, onSave }: { config: ConfigPayload | null; onSave: (values: ConfigValue[]) => Promise<ConfigPayload> }) {
+  const [values, setValues] = useState<Record<string, ConfigValue>>({});
+  const [saving, setSaving] = useState(false);
+  const [localError, setLocalError] = useState("");
+
+  useEffect(() => {
+    setValues(config?.values ?? {});
+  }, [config]);
+
+  const groupedOptions = useMemo(() => {
+    const groups = new Map<string, ConfigOption[]>();
+    for (const option of config?.options ?? []) {
+      const list = groups.get(option.category) ?? [];
+      list.push(option);
+      groups.set(option.category, list);
+    }
+    return [...groups.entries()];
+  }, [config?.options]);
+
+  const updateValue = (key: string, patch: Partial<ConfigValue>) => {
+    const option = config?.options.find((item) => item.key === key);
+    setValues((current) => {
+      const existing = current[key] ?? { key, enabled: false, value: option?.default ?? "" };
+      return { ...current, [key]: { ...existing, ...patch } };
+    });
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!config) return;
+    setSaving(true);
+    setLocalError("");
+    try {
+      const payload = config.options.map((option) => values[option.key] ?? { key: option.key, enabled: false, value: option.default });
+      const updated = await onSave(payload);
+      setValues(updated.values);
+    } catch (err) {
+      setLocalError(normalizeError(err).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <section>
-      <h1>Config</h1>
-      <div className="panel">
-        <p><strong>Config path:</strong> {config?.status.config_path ?? "Not detected"}</p>
-        <p><strong>Config directory:</strong> {config?.status.config_dir ?? "Not detected"}</p>
-        <p><strong>Validation:</strong> {config?.status.yaml_valid ? "Valid" : "Check required"}</p>
+      <div className="toolbar">
+        <h1>Config</h1>
       </div>
+      <form className="panel settingsPanel configSettingsPanel" onSubmit={submit}>
+        <div className="formBuilderHeader">
+          <LabelWithInfo text="Espanso default config" info="These settings are written to config/default.yml in your Espanso configuration folder. Disable an included setting to remove that key from default.yml." />
+          <button className="primary" disabled={saving || !config} type="submit">
+            {saving ? "Saving..." : "Save Config"}
+          </button>
+        </div>
+        {localError && <div className="formError">{localError}</div>}
+        <div className="settingsMeta">
+          <span>Config path: {config?.status.config_path ?? "Not detected"}</span>
+          <span>Default file: {config?.default_path ?? "Not detected"}</span>
+        </div>
+        {!config && <div className="empty compactEmpty">Loading config settings...</div>}
+        {groupedOptions.map(([category, options]) => (
+          <div className="configOptionGroup" key={category}>
+            <h2>{category}</h2>
+            <div className="configOptionGrid">
+              {options.map((option) => {
+                const current = values[option.key] ?? { key: option.key, enabled: false, value: option.default };
+                return (
+                  <div className={`configOptionCard ${current.enabled ? "enabled" : ""}`} key={option.key}>
+                    <label className="checkRow configOptionToggle">
+                      <input
+                        type="checkbox"
+                        checked={current.enabled}
+                        onChange={(event) => updateValue(option.key, { enabled: event.target.checked })}
+                      />
+                      <span>{option.label}</span>
+                      <InfoButton text={option.description} />
+                    </label>
+                    {renderConfigControl(option, current, (value) => updateValue(option.key, { value }))}
+                    <code>{option.key}</code>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {config && Object.keys(config.unknown_values).length > 0 && (
+          <div className="configOptionGroup">
+            <h2>Manual YAML keys</h2>
+            <p className="source">These keys are preserved by EspansoEdit but are not edited by this settings page.</p>
+            <pre>{JSON.stringify(config.unknown_values, null, 2)}</pre>
+          </div>
+        )}
+      </form>
       {config?.files.map((file) => (
         <div className="panel" key={file.path}>
           <h2>{file.file}</h2>
@@ -2633,6 +2759,62 @@ function ConfigView({ config }: { config: ConfigPayload | null }) {
       ))}
       {config && config.files.length === 0 && <div className="empty">No config YAML files found.</div>}
     </section>
+  );
+}
+
+function renderConfigControl(option: ConfigOption, current: ConfigValue, onChange: (value: unknown) => void) {
+  const disabled = !current.enabled;
+  if (option.type === "boolean") {
+    return (
+      <label className="checkboxLabel configBooleanControl">
+        <input
+          type="checkbox"
+          disabled={disabled}
+          checked={Boolean(current.value)}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        <span>{Boolean(current.value) ? "Enabled" : "Disabled"}</span>
+      </label>
+    );
+  }
+  if (option.type === "number") {
+    return (
+      <input
+        type="number"
+        min={0}
+        disabled={disabled}
+        value={typeof current.value === "number" ? current.value : Number(option.default ?? 0)}
+        onChange={(event) => onChange(event.target.value === "" ? 0 : Number(event.target.value))}
+      />
+    );
+  }
+  if (option.type === "select") {
+    return (
+      <select disabled={disabled} value={String(current.value ?? option.default ?? "")} onChange={(event) => onChange(event.target.value)}>
+        {option.choices.map((choice) => (
+          <option key={choice} value={choice}>{choice}</option>
+        ))}
+      </select>
+    );
+  }
+  if (option.type === "list") {
+    const listValue = Array.isArray(current.value) ? current.value.map((item) => String(item)).join("\n") : "";
+    return (
+      <textarea
+        className="codeInput configListInput"
+        disabled={disabled}
+        value={listValue}
+        onChange={(event) => onChange(event.target.value.split("\n"))}
+        rows={4}
+      />
+    );
+  }
+  return (
+    <input
+      disabled={disabled}
+      value={String(current.value ?? "")}
+      onChange={(event) => onChange(event.target.value)}
+    />
   );
 }
 

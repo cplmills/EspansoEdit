@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, Depends
 
 from app.models.schemas import (
@@ -12,6 +10,8 @@ from app.models.schemas import (
     BackupSettings,
     BackupSyncResult,
     AppSettings,
+    EspansoConfigPayload,
+    EspansoConfigUpdate,
     EspansoStatus,
     FolderCreate,
     FolderDeleteResult,
@@ -37,6 +37,7 @@ from app.models.schemas import (
     ShortcutUpdate,
     ValidationResult,
 )
+from app.services.config_service import EspansoConfigService
 from app.services.package_service import EspansoPackageService
 from app.services.settings_service import AppSettingsService
 from app.services.shortcut_service import ShortcutService
@@ -47,6 +48,7 @@ router = APIRouter(prefix="/api")
 _service = ShortcutService()
 _package_service = EspansoPackageService(_service.discovery, _service.reloader)
 _settings_service = AppSettingsService(_service.discovery, _service.reloader)
+_config_service = EspansoConfigService(_service.discovery, _service.reloader)
 
 
 def get_service() -> ShortcutService:
@@ -59,6 +61,10 @@ def get_package_service() -> EspansoPackageService:
 
 def get_settings_service() -> AppSettingsService:
     return _settings_service
+
+
+def get_config_service() -> EspansoConfigService:
+    return _config_service
 
 
 def sync_github_shortcuts_on_startup() -> None:
@@ -344,13 +350,17 @@ def restore_backup(backup_id: str, service: ShortcutService = Depends(get_servic
         raise http_error(exc) from exc
 
 
-@router.get("/config")
-def config(service: ShortcutService = Depends(get_service)) -> dict:
+@router.get("/config", response_model=EspansoConfigPayload)
+def config(service: EspansoConfigService = Depends(get_config_service)) -> EspansoConfigPayload:
     try:
-        status_payload = service.status()
-        files = []
-        for path in service.config_yaml_files():
-            files.append({"path": str(path), "file": path.name, "content": Path(path).read_text(encoding="utf-8")})
-        return {"status": status_payload, "files": files}
+        return service.get_config()
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.put("/config", response_model=EspansoConfigPayload)
+def update_config(payload: EspansoConfigUpdate, service: EspansoConfigService = Depends(get_config_service)) -> EspansoConfigPayload:
+    try:
+        return service.update_config(payload)
     except AppError as exc:
         raise http_error(exc) from exc

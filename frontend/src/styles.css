@@ -585,7 +585,8 @@ textarea::placeholder {
 
 .packageInstall input,
 .settingsPanel input,
-.settingsPanel select {
+.settingsPanel select,
+.settingsPanel textarea {
   width: 100%;
   border: 1px solid #48453d;
   border-radius: 6px;
@@ -598,6 +599,7 @@ textarea::placeholder {
 .packageInstall input:disabled,
 .settingsPanel input:disabled,
 .settingsPanel select:disabled,
+.settingsPanel textarea:disabled,
 .modal input:disabled,
 .modal textarea:disabled,
 .modal select:disabled {
@@ -1124,6 +1126,61 @@ textarea::placeholder {
   min-height: 150px;
 }
 
+.configSettingsPanel {
+  margin-bottom: 18px;
+}
+
+.configOptionGroup {
+  display: grid;
+  gap: 12px;
+}
+
+.configOptionGroup h2 {
+  margin: 4px 0 0;
+}
+
+.configOptionGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.configOptionCard {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-height: 142px;
+  padding: 12px;
+  border: 1px solid #3b3932;
+  border-radius: 8px;
+  background: #201f1b;
+}
+
+.configOptionCard.enabled {
+  border-color: #5d5546;
+}
+
+.configOptionCard code {
+  color: #b5ad9f;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.configOptionToggle {
+  min-height: 38px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.configBooleanControl {
+  min-height: 40px;
+}
+
+.configListInput {
+  min-height: 112px;
+}
+
 .source {
   margin-bottom: 16px;
   color: #a8a194;
@@ -1290,6 +1347,7 @@ textarea::placeholder {
 :root[data-theme="light"] .packageInstall input,
 :root[data-theme="light"] .settingsPanel input,
 :root[data-theme="light"] .settingsPanel select,
+:root[data-theme="light"] .settingsPanel textarea,
 :root[data-theme="light"] .backupSettingsPanel input,
 :root[data-theme="light"] .backupSettingsPanel select,
 :root[data-theme="light"] .modal input,
@@ -1367,6 +1425,7 @@ textarea::placeholder {
 :root[data-theme="light"] .syncSourceCard,
 :root[data-theme="light"] .backupGitHubGroup,
 :root[data-theme="light"] .backupLocationMeta,
+:root[data-theme="light"] .configOptionCard,
 :root[data-theme="light"] .formBuilder,
 :root[data-theme="light"] .checkRow,
 :root[data-theme="light"] .checkboxLabel {
