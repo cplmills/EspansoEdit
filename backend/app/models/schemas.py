@@ -80,6 +80,14 @@ class ShortcutUpdate(BaseModel):
     force_mode: str | None = None
 
 
+class ShortcutOptionsUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    word: bool = False
+    propagate_case: bool = False
+    case_insensitive: bool = False
+
+
 class ShortcutRawUpdate(BaseModel):
     yaml: str
 

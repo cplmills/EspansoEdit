@@ -22,6 +22,7 @@ from app.models.schemas import (
     Shortcut,
     ShortcutCreate,
     ShortcutMove,
+    ShortcutOptionsUpdate,
     ShortcutRawCreate,
     ShortcutRawUpdate,
     ShortcutUpdate,
@@ -124,6 +125,32 @@ class ShortcutService:
             lambda data: self._edit_shortcut(data, shortcut_id, path, payload),
             old_id=shortcut_id,
         )
+
+    def update_shortcut_options(self, shortcut_id: str, payload: ShortcutOptionsUpdate) -> tuple[Shortcut, ReloadResult]:
+        shortcut = self.get_shortcut(shortcut_id)
+        if not shortcut.editable:
+            raise AppError("SHORTCUT_UNSUPPORTED", "Unsupported shortcuts are read-only.", status_code=422)
+        path = self._allowed_file(Path(shortcut.path))
+        options = payload.model_dump(exclude_unset=True)
+        if not options:
+            raise AppError("INVALID_OPTIONS", "Choose at least one shortcut option to update.", status_code=422)
+
+        def update_options(data: Any) -> Shortcut:
+            entry = self._entry_for_id(data, shortcut_id, path)
+            replacement = copy.deepcopy(entry)
+            for key, value in options.items():
+                if key == "case_insensitive":
+                    if value:
+                        replacement.pop("trigger", None)
+                        replacement["regex"] = case_insensitive_regex_for_trigger(shortcut.trigger)
+                    else:
+                        replacement.pop("regex", None)
+                        replacement["trigger"] = shortcut.trigger
+                else:
+                    replacement[key] = value
+            return self._replace_shortcut_entry(data, shortcut_id, path, replacement)
+
+        return self._mutate_file(path, "options-edit", update_options, old_id=shortcut_id)
 
     def update_shortcut_raw(self, shortcut_id: str, payload: ShortcutRawUpdate) -> tuple[Shortcut, ReloadResult]:
         shortcut = self.get_shortcut(shortcut_id)

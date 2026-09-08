@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import copy
 import plistlib
 from pathlib import Path
 
 import pytest
 
-from app.models.schemas import FolderExport, MacOSTextReplacementImport, ShortcutCreate, ShortcutMove, ShortcutRawCreate, ShortcutRawUpdate, ShortcutUpdate
+from app.models.schemas import FolderExport, MacOSTextReplacementImport, ShortcutCreate, ShortcutMove, ShortcutOptionsUpdate, ShortcutRawCreate, ShortcutRawUpdate, ShortcutUpdate
 from app.services.macos_text_replacement_importer import MacOSTextReplacementImportService
 from app.services.shortcut_service import ShortcutService
 from app.utils.errors import AppError
@@ -720,6 +721,89 @@ def test_rollback_after_simulated_reload_failure(espanso_root: Path) -> None:
 
     assert exc.value.code == "ESPANSO_RELOAD_FAILED"
     assert 'replace: "Old"' in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("option", ["word", "propagate_case"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_bulk_options_preserve_existing_forms(service: ShortcutService, espanso_root: Path, option: str, enabled: bool) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api.routes import get_service, router
+
+    path = write_match(espanso_root, "forms.yml", '''matches:
+  # Existing form with implicit text fields
+  - trigger: ":email"
+    form: "Hi [[name]]"
+    propagate_case: true
+    word: true
+    force_mode: clipboard
+  - trigger: ":plan"
+    form: "Hi [[name]], [[plan]]"
+    form_fields:
+      plan:
+        type: choice
+        values: [Basic, Pro]
+    label: "Plan email"
+    propagate_case: true
+    word: true
+''')
+    other_path = write_match(espanso_root, "Shared/basic.yml", '''matches:
+  - trigger: ":plain"
+    replace: "Hello"
+    propagate_case: true
+    word: true
+''')
+    originals = {p: copy.deepcopy(service.yaml.load_file(p)) for p in [path, other_path]}
+    shortcuts = service.list_shortcuts()
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_service] = lambda: service
+    with TestClient(app) as client:
+        for shortcut in shortcuts:
+            response = client.patch(f"/api/shortcuts/{shortcut.id}/options", json={option: enabled})
+            assert response.status_code == 200, response.text
+            assert response.json()["shortcut"][option] is enabled
+
+    for p, expected in originals.items():
+        for entry in expected["matches"]:
+            entry[option] = enabled
+        assert service.yaml.load_file(p) == expected
+    assert "# Existing form with implicit text fields" in path.read_text(encoding="utf-8")
+    assert len(service.list_backups()) == 3
+
+
+def test_case_insensitive_options_preserve_form(service: ShortcutService, espanso_root: Path) -> None:
+    path = write_match(espanso_root, "form.yml", 'matches:\n  - trigger: ".email"\n    form: "Hi [[name]]"\n    propagate_case: false\n')
+    original = service.yaml.load_file(path)
+    shortcut = service.list_shortcuts()[0]
+
+    updated, _ = service.update_shortcut_options(shortcut.id, ShortcutOptionsUpdate(case_insensitive=True))
+
+    assert updated.case_insensitive is True
+    assert updated.trigger == ".email"
+    assert updated.form == "Hi [[name]]"
+    assert updated.propagate_case is False
+    entry = service.yaml.load_file(path)["matches"][0]
+    assert entry["regex"] == r"(?i)\.email"
+    assert "trigger" not in entry
+
+    restored, _ = service.update_shortcut_options(updated.id, ShortcutOptionsUpdate(case_insensitive=False))
+
+    assert restored.case_insensitive is False
+    assert service.yaml.load_file(path) == original
+
+
+def test_shortcut_options_rollback_after_reload_failure(espanso_root: Path) -> None:
+    service = ShortcutService(FakeDiscovery(espanso_root), FakeReloader(should_fail=True))
+    original = 'matches:\n  - trigger: ":email"\n    form: "Hi [[name]]"\n    propagate_case: true\n'
+    path = write_match(espanso_root, "form.yml", original)
+    shortcut = service.list_shortcuts()[0]
+
+    with pytest.raises(AppError) as exc:
+        service.update_shortcut_options(shortcut.id, ShortcutOptionsUpdate(propagate_case=False))
+
+    assert exc.value.code == "ESPANSO_RELOAD_FAILED"
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_preventing_writes_outside_allowed_directories(service: ShortcutService, tmp_path: Path) -> None:

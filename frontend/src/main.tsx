@@ -623,9 +623,9 @@ function App() {
     try {
       let reload: Record<string, unknown> | null = null;
       for (const shortcut of editableShortcuts) {
-        const result = await api<MutationResult>(`/api/shortcuts/${shortcut.id}`, {
-          method: "PUT",
-          body: JSON.stringify(toShortcutUpdatePayload(shortcut, patch))
+        const result = await api<MutationResult>(`/api/shortcuts/${shortcut.id}/options`, {
+          method: "PATCH",
+          body: JSON.stringify(patch)
         });
         reload = result.reload;
       }
@@ -3019,22 +3019,6 @@ function toStructuredPayload(values: ShortcutFormValues) {
     case_insensitive: values.case_insensitive,
     uppercase_style: values.uppercase_style || null,
     force_mode: values.force_mode || null
-  };
-}
-
-function toShortcutUpdatePayload(shortcut: Shortcut, patch: ShortcutOptionPatch) {
-  const isForm = Boolean(shortcut.form);
-  return {
-    trigger: shortcut.trigger ?? "",
-    replace: isForm ? "" : shortcut.replace ?? "",
-    form: isForm ? shortcut.form : null,
-    form_fields_yaml: isForm ? shortcut.form_fields_yaml || null : null,
-    label: shortcut.label || null,
-    word: patch.word ?? Boolean(shortcut.word),
-    propagate_case: patch.propagate_case ?? Boolean(shortcut.propagate_case),
-    case_insensitive: patch.case_insensitive ?? Boolean(shortcut.case_insensitive),
-    uppercase_style: shortcut.uppercase_style || null,
-    force_mode: shortcut.force_mode || null
   };
 }
 

@@ -32,6 +32,7 @@ from app.models.schemas import (
     Shortcut,
     ShortcutCreate,
     ShortcutMove,
+    ShortcutOptionsUpdate,
     ShortcutRawCreate,
     ShortcutRawUpdate,
     ShortcutUpdate,
@@ -256,6 +257,15 @@ def create_shortcut_raw(payload: ShortcutRawCreate, service: ShortcutService = D
 def update_shortcut(shortcut_id: str, payload: ShortcutUpdate, service: ShortcutService = Depends(get_service)) -> MutationResult:
     try:
         shortcut, reload_result = service.update_shortcut(shortcut_id, payload)
+        return MutationResult(shortcut=shortcut, reload=reload_result.to_dict())
+    except AppError as exc:
+        raise http_error(exc) from exc
+
+
+@router.patch("/shortcuts/{shortcut_id}/options", response_model=MutationResult)
+def update_shortcut_options(shortcut_id: str, payload: ShortcutOptionsUpdate, service: ShortcutService = Depends(get_service)) -> MutationResult:
+    try:
+        shortcut, reload_result = service.update_shortcut_options(shortcut_id, payload)
         return MutationResult(shortcut=shortcut, reload=reload_result.to_dict())
     except AppError as exc:
         raise http_error(exc) from exc
