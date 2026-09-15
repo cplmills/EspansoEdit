@@ -2,15 +2,20 @@ const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } = 
 const { spawn } = require("child_process");
 const fs = require("fs");
 const http = require("http");
+const net = require("net");
 const path = require("path");
+const { requestBackend } = require("./backend-client.cjs");
 
-const BACKEND_PORT = 8765;
-const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
+let backendPort;
+let backendUrl;
 const MAC_APP_PATH = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
 
 let mainWindow = null;
 let backendProcess = null;
 let tray = null;
+let backendFailure = null;
+let backendReady = false;
+let quitting = false;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -26,64 +31,79 @@ function backendDir() {
   return app.isPackaged ? path.join(process.resourcesPath, "backend") : path.join(appRoot(), "backend");
 }
 
-function frontendIndex() {
-  return path.join(appRoot(), "frontend", "dist", "index.html");
-}
-
-function pythonCandidates() {
-  const backend = backendDir();
-  return [
-    path.join(backend, ".venv", "bin", "python"),
-    path.join(app.getAppPath(), "backend", ".venv", "bin", "python"),
-    "python3"
-  ];
+function reserveBackendPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
 }
 
 function startBackend() {
   if (backendProcess) return;
 
   const cwd = backendDir();
-  const python = pythonCandidates().find((candidate) => candidate === "python3" || fs.existsSync(candidate)) || "python3";
-  backendProcess = spawn(python, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(BACKEND_PORT)], {
+  const executable = app.isPackaged
+    ? path.join(cwd, "espansoedit-backend")
+    : path.join(cwd, ".venv", "bin", "python");
+  if (!fs.existsSync(executable)) throw new Error("The app's backend is missing. Please reinstall EspansoEdit.");
+  const args = app.isPackaged ? ["--port", String(backendPort)] : ["desktop_entry.py", "--port", String(backendPort)];
+  const frontend = app.isPackaged ? path.join(process.resourcesPath, "frontend") : path.join(appRoot(), "frontend", "dist");
+  const logPath = path.join(app.getPath("userData"), "backend.log");
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  fs.writeFileSync(logPath, "");
+  const env = { ...process.env, PATH: `${MAC_APP_PATH}:${process.env.PATH || ""}`, ESPANSOEDIT_FRONTEND_DIR: frontend };
+  delete env.PYTHONHOME;
+  delete env.PYTHONPATH;
+  backendProcess = spawn(executable, args, {
     cwd,
-    stdio: "pipe",
-    env: { ...process.env, PATH: `${MAC_APP_PATH}:${process.env.PATH || ""}`, PYTHONPATH: cwd }
+    stdio: ["ignore", "pipe", "pipe"],
+    env
   });
-
-  backendProcess.on("exit", () => {
+  for (const stream of [backendProcess.stdout, backendProcess.stderr]) {
+    stream.on("data", (chunk) => fs.appendFileSync(logPath, chunk));
+  }
+  backendProcess.on("error", (error) => {
+    backendFailure = error;
+  });
+  backendProcess.on("exit", (code, signal) => {
     backendProcess = null;
+    backendFailure = new Error(`The backend stopped (${signal || `exit code ${code}`}).`);
+    if (backendReady && !quitting) {
+      dialog.showErrorBox("EspansoEdit backend stopped", `${backendFailure.message}\nPlease reopen the app.\n\nDiagnostic log: ${logPath}`);
+      app.quit();
+    }
   });
 }
 
-function waitForBackend(deadlineMs = 10000) {
+async function waitForBackend(deadlineMs = 45000) {
   const started = Date.now();
-  return new Promise((resolve, reject) => {
-    const check = () => {
-      const request = http.get(`${BACKEND_URL}/api/status`, (response) => {
-        response.resume();
-        if (response.statusCode && response.statusCode < 500) {
-          resolve();
-          return;
-        }
-        retry();
+  while (Date.now() - started < deadlineMs) {
+    if (backendFailure) throw backendFailure;
+    const ready = await new Promise((resolve) => {
+      const request = http.get(`${backendUrl}/`, (response) => {
+        let body = "";
+        response.on("data", (chunk) => { body += chunk; });
+        response.on("error", () => resolve(false));
+        response.on("end", () => {
+          try {
+            resolve(response.statusCode === 200 && JSON.parse(body).name === "Espanso Shortcut Manager");
+          } catch { resolve(false); }
+        });
       });
-      request.on("error", retry);
+      request.on("error", () => resolve(false));
       request.setTimeout(800, () => {
         request.destroy();
-        retry();
+        resolve(false);
       });
-    };
-
-    const retry = () => {
-      if (Date.now() - started > deadlineMs) {
-        reject(new Error("Backend did not start in time."));
-        return;
-      }
-      setTimeout(check, 250);
-    };
-
-    check();
-  });
+    });
+    if (ready) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("The backend did not start in time.");
 }
 
 function createWindow() {
@@ -92,7 +112,7 @@ function createWindow() {
     height: 820,
     minWidth: 900,
     minHeight: 620,
-    title: "EspansoEdit",
+    title: `EspansoEdit ${app.getVersion()}`,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -100,7 +120,8 @@ function createWindow() {
     }
   });
 
-  mainWindow.loadFile(frontendIndex());
+  mainWindow.loadURL(`${backendUrl}/ui/`);
+  mainWindow.on("page-title-updated", (event) => event.preventDefault());
 
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -108,6 +129,7 @@ function createWindow() {
 }
 
 function showWindow() {
+  if (!backendReady) return;
   if (!mainWindow) createWindow();
   mainWindow.show();
   mainWindow.focus();
@@ -136,6 +158,7 @@ function createMenu() {
       {
         label: "EspansoEdit",
         submenu: [
+          { role: "about", label: `About EspansoEdit ${app.getVersion()}` },
           { label: "Open EspansoEdit", click: showWindow },
           { type: "separator" },
           { role: "quit" }
@@ -163,10 +186,26 @@ function createMenu() {
           { role: "zoomIn" },
           { role: "zoomOut" }
         ]
+      },
+      {
+        role: "help",
+        submenu: [{ label: "Show Diagnostic Log", click: () => shell.showItemInFolder(path.join(app.getPath("userData"), "backend.log")) }]
       }
     ])
   );
 }
+
+ipcMain.handle("backend:request", (event, request) => {
+  if (!mainWindow || event.senderFrame !== mainWindow.webContents.mainFrame ||
+      !event.senderFrame.url.startsWith(`${backendUrl}/ui/`)) {
+    throw new Error("Requests are only available to the EspansoEdit window.");
+  }
+  return requestBackend(backendUrl, request, {
+    app_version: app.getVersion(),
+    backend_running: Boolean(backendProcess && !backendFailure),
+    log_path: path.join(app.getPath("userData"), "backend.log")
+  });
+});
 
 ipcMain.handle("export:select-directory", async () => {
   const options = {
@@ -185,14 +224,15 @@ if (gotSingleInstanceLock) {
     createMenu();
     createTray();
     try {
-      await waitForBackend(500);
-    } catch (error) {
+      backendPort = await reserveBackendPort();
+      backendUrl = `http://127.0.0.1:${backendPort}`;
       startBackend();
-      try {
-        await waitForBackend();
-      } catch (backendError) {
-        console.error(backendError);
-      }
+      await waitForBackend();
+      backendReady = true;
+    } catch (error) {
+      dialog.showErrorBox("EspansoEdit could not start", `${error.message}\n\nDiagnostic log: ${path.join(app.getPath("userData"), "backend.log")}\n\nPython does not need to be installed separately. Please reinstall the latest EspansoEdit build.`);
+      app.quit();
+      return;
     }
     createWindow();
   });
@@ -200,6 +240,7 @@ if (gotSingleInstanceLock) {
   app.on("activate", showWindow);
 
   app.on("before-quit", () => {
+    quitting = true;
     if (backendProcess) backendProcess.kill();
   });
 }

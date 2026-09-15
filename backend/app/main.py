@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router, sync_github_shortcuts_on_startup
 from app.utils.errors import AppError
@@ -19,6 +22,10 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+frontend_dir = os.environ.get("ESPANSOEDIT_FRONTEND_DIR")
+if frontend_dir:
+    app.mount("/ui", StaticFiles(directory=frontend_dir, html=True), name="desktop-ui")
 
 
 @app.on_event("startup")

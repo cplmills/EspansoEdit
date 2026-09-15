@@ -18,7 +18,11 @@ frontend/
   src/          React app
 ```
 
-## Prerequisites
+## Installer Requirements
+
+Install and launch Espanso, then install the EspansoEdit DMG for your Mac's architecture. The installer includes its own Python runtime and backend dependencies; Python, Node.js, Git, and manually created configuration files are not required on the destination Mac. A GitHub repository is optional.
+
+## Development Prerequisites
 
 - macOS
 - Python 3.10+
@@ -42,6 +46,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8765 --reload
 ```bash
 cd frontend
 npm install
+backend/.venv/bin/python -m pip install -r backend/requirements-build.txt
 npm run dev
 ```
 
@@ -84,10 +89,16 @@ release/mac-arm64/EspansoEdit.app
 The generated DMG is written to:
 
 ```text
-release/EspansoEdit-2.0.1-arm64.dmg
+release/EspansoEdit-2.0.8-arm64.dmg
 ```
 
-The desktop app starts the backend on `127.0.0.1:8765`, loads the built frontend, and adds a macOS menu bar/tray item with quick actions for opening the app and the Espanso match folder. Local development builds are unsigned; use a Developer ID certificate and notarization before distributing outside this Mac.
+The desktop app starts its bundled backend on an available loopback port and serves the UI from the same origin. Desktop API requests go through a restricted Electron IPC bridge to the local service instead of browser fetch. Packaging uses PyInstaller to include Python and all required modules instead of copying the developer's virtual environment. Startup errors are shown in a dialog, with details in `backend.log` in Electron's user-data folder (Help > Show Diagnostic Log). The app version is displayed in the window title and About menu. Local builds are unsigned; use a Developer ID certificate and notarization for distribution.
+
+After building, verify the packaged backend with external Python access blocked:
+
+```bash
+node desktop/test-backend.cjs release/mac-arm64/EspansoEdit.app/Contents/Resources
+```
 
 ## Espanso Configuration Handling
 

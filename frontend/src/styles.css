@@ -860,6 +860,68 @@ textarea::placeholder {
   pointer-events: none;
 }
 
+.batchProgress {
+  position: fixed;
+  inset: 18px 0 auto;
+  width: min(520px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 18px 20px;
+  border: 1px solid #6d6657;
+  border-radius: 8px;
+  background: #25241f;
+  color: #f1eee6;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+}
+
+.batchProgress::backdrop {
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.batchProgressHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.batchProgressHeading span {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.batchProgress progress {
+  display: block;
+  width: 100%;
+  height: 8px;
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #4a4740;
+  accent-color: #d79b33;
+}
+
+.batchProgress progress::-webkit-progress-bar { background: #4a4740; }
+.batchProgress progress::-webkit-progress-value { background: #d79b33; }
+.batchProgress progress::-moz-progress-bar { background: #d79b33; }
+
+.batchProgressStatus {
+  margin-top: 10px;
+  height: 20px;
+  font-size: 13px;
+  line-height: 20px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+:root[data-theme="light"] .batchProgress {
+  background: #ffffff;
+  color: #24231f;
+  border-color: #cec9bf;
+}
+
 .loading {
   justify-self: end;
   width: max-content;

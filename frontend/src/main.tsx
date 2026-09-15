@@ -19,6 +19,7 @@ type BrowserDirectoryHandle = {
 declare global {
   interface Window {
     espansoEdit?: {
+      request?: (request: { path: string; method: string; body?: string }) => Promise<{ ok: boolean; status: number; statusText: string; payload: any }>;
       selectExportDirectory?: () => Promise<string | null>;
     };
     showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<BrowserDirectoryHandle>;
@@ -340,6 +341,8 @@ type ShortcutOptionPatch = {
   case_insensitive?: boolean;
 };
 
+type BatchProgress = { completed: number; total: number; trigger: string | null };
+
 const nav: { id: View; label: string }[] = [
   { id: "shortcuts", label: "Shortcuts" },
   { id: "packages", label: "Packages" },
@@ -350,12 +353,19 @@ const nav: { id: View; label: string }[] = [
 ];
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const apiBase = window.location.protocol === "file:" ? "http://127.0.0.1:8765" : "";
-  const response = await fetch(`${apiBase}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) },
-    ...options
-  });
-  const payload = await response.json().catch(() => null);
+  let response;
+  let payload;
+  if (window.espansoEdit?.request) {
+    response = await window.espansoEdit.request({ path, method: options?.method ?? "GET", body: typeof options?.body === "string" ? options.body : undefined });
+    payload = response.payload;
+  } else {
+    const apiBase = window.location.protocol === "file:" ? "http://127.0.0.1:8765" : "";
+    response = await fetch(`${apiBase}${path}`, {
+      ...options,
+      headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) }
+    });
+    payload = await response.json().catch(() => null);
+  }
   if (!response.ok) {
     const detail = payload?.detail ?? payload;
     const error: ApiError = detail?.error ?? {
@@ -389,6 +399,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -617,23 +628,33 @@ function App() {
 
   const bulkUpdateShortcutOptions = async (selectedShortcuts: Shortcut[], patch: ShortcutOptionPatch) => {
     const editableShortcuts = selectedShortcuts.filter((shortcut) => shortcut.editable && shortcut.supported && shortcut.trigger);
-    if (editableShortcuts.length === 0) return;
+    if (editableShortcuts.length === 0 || batchProgress) return false;
     setNotice("");
     setError(null);
+    let completed = 0;
+    setBatchProgress({ completed, total: editableShortcuts.length, trigger: editableShortcuts[0].trigger });
     try {
       let reload: Record<string, unknown> | null = null;
       for (const shortcut of editableShortcuts) {
+        setBatchProgress({ completed, total: editableShortcuts.length, trigger: shortcut.trigger });
         const result = await api<MutationResult>(`/api/shortcuts/${shortcut.id}/options`, {
           method: "PATCH",
           body: JSON.stringify(patch)
         });
         reload = result.reload;
+        completed += 1;
+        setBatchProgress({ completed, total: editableShortcuts.length, trigger: null });
       }
-      setNotice(`Updated ${editableShortcuts.length} shortcut${editableShortcuts.length === 1 ? "" : "s"}. ${reloadMessage(reload)}`);
       await refresh();
+      setNotice(`Updated ${completed} shortcut${completed === 1 ? "" : "s"}. ${reloadMessage(reload)}`);
+      return true;
     } catch (err) {
-      setError(normalizeError(err));
-      throw err;
+      await refresh();
+      const failure = normalizeError(err);
+      setError({ ...failure, message: `Updated ${completed} of ${editableShortcuts.length} shortcuts before the batch stopped. ${failure.message}` });
+      return false;
+    } finally {
+      setBatchProgress(null);
     }
   };
 
@@ -893,7 +914,7 @@ function App() {
 
   const alertStack = createPortal(
     <div className="statusOverlay" aria-live="polite">
-      {loading && <div className="loading">Loading...</div>}
+      {loading && !batchProgress && <div className="loading">Loading...</div>}
       {error && <Alert type="error" title={error.code} message={error.message} details={error.details} onClose={() => setError(null)} />}
       {notice && <Alert type="success" title="Success" message={notice} onClose={() => setNotice("")} />}
     </div>,
@@ -903,6 +924,7 @@ function App() {
   return (
     <>
       {alertStack}
+      {batchProgress && <BatchProgressDialog progress={batchProgress} />}
       <div className={`shell ${sidebarCollapsed ? "sidebarCollapsed" : ""}`}>
       <aside className="sidebar">
         <button
@@ -1020,6 +1042,29 @@ function App() {
   );
 }
 
+function BatchProgressDialog({ progress }: { progress: BatchProgress }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialog.current;
+    element?.showModal();
+    return () => element?.close();
+  }, []);
+
+  return createPortal(
+    <dialog ref={dialog} className="batchProgress" aria-labelledby="batch-progress-title" aria-describedby="batch-progress-status" onCancel={(event) => event.preventDefault()} tabIndex={-1}>
+      <div className="batchProgressHeading">
+        <strong id="batch-progress-title">Updating shortcuts</strong>
+        <span>{progress.completed} / {progress.total}</span>
+      </div>
+      <progress aria-label="Shortcuts updated" value={progress.completed} max={progress.total} />
+      <div id="batch-progress-status" className="batchProgressStatus" role="status">
+        {progress.completed === progress.total ? "Refreshing shortcuts..." : `Updating ${progress.trigger ?? "shortcut"}...`}
+      </div>
+    </dialog>,
+    document.body,
+  );
+}
+
 function ShortcutsView(props: {
   shortcuts: Shortcut[];
   search: string;
@@ -1032,7 +1077,7 @@ function ShortcutsView(props: {
   onEdit: (shortcut: Shortcut) => void;
   onMove: (shortcut: Shortcut) => void;
   onDelete: (shortcut: Shortcut) => void;
-  onBulkUpdateOptions: (shortcuts: Shortcut[], patch: ShortcutOptionPatch) => Promise<void>;
+  onBulkUpdateOptions: (shortcuts: Shortcut[], patch: ShortcutOptionPatch) => Promise<boolean>;
 }) {
   const [sortKey, setSortKey] = useState<ShortcutSortKey>("trigger");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
@@ -1089,8 +1134,7 @@ function ShortcutsView(props: {
     if (selectedShortcuts.length === 0) return;
     setBulkSaving(true);
     try {
-      await props.onBulkUpdateOptions(selectedShortcuts, patch);
-      setSelectedIds(new Set());
+      if (await props.onBulkUpdateOptions(selectedShortcuts, patch)) setSelectedIds(new Set());
     } finally {
       setBulkSaving(false);
     }
@@ -2853,6 +2897,8 @@ function StatusPill({ ok, label }: { ok: boolean; label: string }) {
 
 function normalizeError(err: unknown): ApiError {
   if (typeof err === "object" && err && "code" in err && "message" in err) return err as ApiError;
+  if (err instanceof Error) return { code: "REQUEST_FAILED", message: err.message || "Request failed.", details: { name: err.name } };
+  if (typeof err === "string") return { code: "REQUEST_FAILED", message: err };
   return { code: "UNKNOWN_ERROR", message: "Unexpected error.", details: err };
 }
 
@@ -3063,7 +3109,7 @@ function isImportableMacOSReplacement(item: MacOSTextReplacementItem) {
 function defaultGitSyncSettings(): GitSyncSettings {
   return {
     enabled: false,
-    sources: [defaultGitSyncSource()]
+    sources: []
   };
 }
 
@@ -3081,11 +3127,11 @@ function defaultBackupSettings(): BackupSettings {
   };
 }
 
-function normalizeAppSettings(settings: AppSettings): AppSettings {
+function normalizeAppSettings(settings: AppSettings | null): AppSettings {
   return {
-    theme: settings.theme ?? "dark",
-    git_sync: normalizeGitSyncSettings(settings.git_sync ?? defaultGitSyncSettings()),
-    backup: normalizeBackupSettings(settings.backup ?? defaultBackupSettings())
+    theme: settings?.theme ?? "dark",
+    git_sync: normalizeGitSyncSettings(settings?.git_sync ?? defaultGitSyncSettings()),
+    backup: normalizeBackupSettings(settings?.backup ?? defaultBackupSettings())
   };
 }
 
@@ -3125,13 +3171,14 @@ function defaultGitSyncSource(): GitSyncSource {
 
 function normalizeGitSyncSettings(settings: GitSyncSettings): GitSyncSettings {
   return {
-    enabled: settings.enabled,
-    sources: settings.sources.map(normalizeGitSyncSource)
+    enabled: settings.enabled ?? false,
+    sources: (settings.sources ?? []).map(normalizeGitSyncSource)
   };
 }
 
 function normalizeGitSyncSource(source: GitSyncSource): GitSyncSource {
   return {
+    ...defaultGitSyncSource(),
     ...source,
     name: source.name?.trim() || null,
     repo_url: source.repo_url?.trim() || null,
@@ -3139,7 +3186,7 @@ function normalizeGitSyncSource(source: GitSyncSource): GitSyncSource {
     branch: source.branch?.trim() || null,
     folder: source.folder?.trim() || "GitHub",
     write_access: source.write_access,
-    file_paths: source.file_paths.map((path) => path.trim()).filter(Boolean),
+    file_paths: (source.file_paths ?? []).map((path) => path.trim()).filter(Boolean),
     last_local_hashes: source.last_local_hashes ?? {}
   };
 }
